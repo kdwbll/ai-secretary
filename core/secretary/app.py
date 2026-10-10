@@ -23,6 +23,7 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
+APP_VERSION = "0.2.0"
 DB = Database(ROOT / "data" / "second-brain.db")
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
@@ -126,12 +127,12 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="第二大脑", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="第二大脑", version=APP_VERSION, lifespan=lifespan)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.1.0"}
+    return {"ok": True, "version": APP_VERSION}
 
 
 @app.post("/api/chat")
@@ -269,6 +270,18 @@ def ingest_notification(body: NotificationInput):
     return SERVICE.ingest_notification(body.package, body.title, body.text)
 
 
+@app.get("/api/events")
+def events(source: Optional[str] = None, limit: int = 100):
+    limit = max(1, min(limit, 500))
+    if source:
+        rows = DB.rows("SELECT id,created_at,source,kind,payload,status FROM events WHERE source=? ORDER BY id DESC LIMIT ?", (source, limit))
+    else:
+        rows = DB.rows("SELECT id,created_at,source,kind,payload,status FROM events ORDER BY id DESC LIMIT ?", (limit,))
+    for row in rows:
+        row["payload"] = json.loads(row["payload"] or "{}")
+    return {"events": rows}
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix
@@ -279,6 +292,22 @@ async def upload(file: UploadFile = File(...)):
         return FILES.ingest(temp_path, file.filename or "upload")
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@app.get("/api/files")
+def file_list(limit: int = 100):
+    limit = max(1, min(limit, 500))
+    return {"files": DB.rows("SELECT hash,original_name,stored_path,created_at,extracted_text FROM files ORDER BY created_at DESC LIMIT ?", (limit,))}
+
+
+@app.delete("/api/files/{digest}")
+def file_delete(digest: str):
+    try:
+        return FILES.delete(digest)
+    except KeyError:
+        raise HTTPException(404, "文件不存在")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/files/{digest}/reanalyze")

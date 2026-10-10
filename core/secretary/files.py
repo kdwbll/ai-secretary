@@ -62,6 +62,20 @@ class FilePipeline:
         self.memory.append_daily(f"重新分析文件 [{record['original_name']}](../../{record['stored_path']})：{text[:300]}", "文件重新分析", inferred=False)
         return {**record, "extracted_text": text, "duplicate": True, "reanalyzed": True, "can_reanalyze": True}
 
+    def delete(self, digest: str) -> dict:
+        rows = self.database.rows("SELECT * FROM files WHERE hash=?", (digest,))
+        if not rows:
+            raise KeyError("文件不存在")
+        record = rows[0]
+        path = (self.files_root.parent / record["stored_path"]).resolve()
+        files_root = self.files_root.resolve()
+        if files_root not in path.parents:
+            raise ValueError("拒绝删除归档目录之外的文件")
+        path.unlink(missing_ok=True)
+        with self.database.connect() as db:
+            db.execute("DELETE FROM files WHERE hash=?", (digest,))
+        return {"ok": True, "hash": digest, "original_name": record["original_name"]}
+
     def extract(self, path: Path) -> str:
         suffix = path.suffix.lower()
         if suffix in {".txt", ".md", ".csv", ".json", ".log"}:

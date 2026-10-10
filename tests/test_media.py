@@ -12,6 +12,24 @@ from core.secretary.storage import LocalStorage
 
 
 class MediaTests(unittest.TestCase):
+    def test_delete_removes_file_and_database_record(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = Database(root / "data.db")
+            memory = MemoryEngine(LocalStorage(root / "memory"), database)
+            memory.initialize()
+            pipeline = FilePipeline(root / "files", database, memory, Mock())
+            source = root / "note.txt"
+            source.write_text("需要保存的内容", encoding="utf-8")
+            record = pipeline.ingest(source, "note.txt")
+            archived = root / record["stored_path"]
+            self.assertTrue(archived.is_file())
+
+            pipeline.delete(record["hash"])
+
+            self.assertFalse(archived.exists())
+            self.assertEqual(database.rows("SELECT * FROM files WHERE hash=?", (record["hash"],)), [])
+
     def test_failed_duplicate_is_automatically_reanalyzed(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

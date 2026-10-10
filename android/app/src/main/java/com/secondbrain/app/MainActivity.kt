@@ -7,13 +7,23 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val requestPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
@@ -27,31 +37,210 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private val Forest = Color(0xFF315D49)
+private val Paper = Color(0xFFF5F1E8)
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun SecondBrainApp(intent: Intent?) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var server by remember { mutableStateOf(context.getSharedPreferences("second_brain", Context.MODE_PRIVATE).getString("server", "http://192.168.1.2:8765") ?: "http://192.168.1.2:8765") }
-    var message by remember { mutableStateOf(intent?.getStringExtra(Intent.EXTRA_TEXT) ?: "") }
-    MaterialTheme(colorScheme = lightColorScheme(primary = androidx.compose.ui.graphics.Color(0xFF315D49))) {
-        Scaffold(topBar = { TopAppBar(title = { Text("第二大脑") }) }) { padding ->
-            Column(Modifier.padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("连接你的电脑", style = MaterialTheme.typography.headlineSmall)
-                OutlinedTextField(server, { server = it }, label = { Text("核心服务地址") }, modifier = Modifier.fillMaxWidth())
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = {
-                        context.getSharedPreferences("second_brain", Context.MODE_PRIVATE).edit().putString("server", server.trimEnd('/')).apply()
-                    }) { Text("保存连接地址") }
-                    OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("开启通知读取") }
-                }
-                Text("分享到这里的文字会先进入本机离线队列，连上电脑后自动同步。", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(message, { message = it }, label = { Text("记录或提问") }, modifier = Modifier.fillMaxWidth().height(140.dp))
-                Button(onClick = {
-                    val cleanServer = server.trimEnd('/')
-                    context.getSharedPreferences("second_brain", Context.MODE_PRIVATE).edit().putString("server", cleanServer).apply()
-                    SyncWorker.enqueueChat(context, cleanServer, message)
-                }, enabled = message.isNotBlank()) { Text("发送到第二大脑") }
+    val preferences = remember { context.getSharedPreferences("second_brain", Context.MODE_PRIVATE) }
+    var server by remember { mutableStateOf(preferences.getString("server", "http://192.168.1.2:8765") ?: "http://192.168.1.2:8765") }
+    var draft by remember { mutableStateOf(intent?.getStringExtra(Intent.EXTRA_TEXT) ?: "") }
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var connected by remember { mutableStateOf<Boolean?>(null) }
+    var chats by remember { mutableStateOf<List<ChatExchange>>(emptyList()) }
+    var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
+    var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
+    var notice by remember { mutableStateOf("正在检查电脑连接…") }
+    var sending by remember { mutableStateOf(false) }
+    var uploading by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    val scope = rememberCoroutineScope()
+
+    suspend fun refresh() {
+        connected = ApiClient.health(server)
+        if (connected == true) {
+            notice = "已与电脑联通 · 数据自动同步"
+            runCatching { chats = ApiClient.chats(server) }
+            runCatching { events = ApiClient.events(server) }
+            runCatching { files = ApiClient.files(server) }
+        } else notice = "未连接电脑 · 检查同一 Wi-Fi、地址和电脑服务"
+    }
+
+    LaunchedEffect(server) {
+        while (isActive) {
+            refresh()
+            delay(2500)
+        }
+    }
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) scope.launch {
+            uploading = true
+            notice = "正在上传 ${uris.size} 个文件…"
+            var success = 0
+            for (uri in uris) {
+                runCatching { ApiClient.upload(context, server, uri) }
+                    .onSuccess { success++ }
+                    .onFailure { notice = "上传失败：${it.message}" }
+            }
+            uploading = false
+            if (success > 0) {
+                notice = "已上传 $success 个文件，电脑端也会显示"
+                files = ApiClient.files(server)
+                selectedTab = 2
             }
         }
+    }
+
+    if (deleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除文件？") },
+            text = { Text("将删除“${deleteTarget?.name}”的上传记录和电脑中的归档原件，此操作无法撤销。") },
+            confirmButton = { TextButton(onClick = {
+                val target = deleteTarget ?: return@TextButton
+                deleteTarget = null
+                scope.launch {
+                    runCatching { ApiClient.deleteFile(server, target.hash) }
+                        .onSuccess { files = ApiClient.files(server); notice = "文件已删除" }
+                        .onFailure { notice = "删除失败：${it.message}" }
+                }
+            }) { Text("确认删除", color = Color(0xFFA04339)) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+        )
+    }
+
+    MaterialTheme(colorScheme = lightColorScheme(primary = Forest, background = Paper, surface = Color(0xFFFFFDF8))) {
+        Scaffold(
+            topBar = {
+                TopAppBar(title = { Text("第二大脑") }, actions = {
+                    Surface(color = if (connected == true) Color(0xFFDDEBE2) else Color(0xFFF3DEDA), shape = RoundedCornerShape(99.dp)) {
+                        Text(if (connected == true) "● 已联通" else "● 未联通", Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.labelSmall)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                })
+            },
+            bottomBar = {
+                NavigationBar {
+                    NavigationBarItem(selected = selectedTab == 0, onClick = { selectedTab = 0 }, icon = { Text("✦") }, label = { Text("会话") })
+                    NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Text("▤") }, label = { Text("采集") })
+                    NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▣") }, label = { Text("文件") })
+                    NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Text("⚙") }, label = { Text("设置") })
+                }
+            }
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).background(Paper)) {
+                Text(notice, Modifier.fillMaxWidth().background(if (connected == true) Color(0xFFE6EEE8) else Color(0xFFF2E7E2)).padding(horizontal = 16.dp, vertical = 9.dp), style = MaterialTheme.typography.bodySmall)
+                when (selectedTab) {
+                    0 -> ConversationScreen(chats, draft, { draft = it }, sending, uploading, onSend = {
+                        val message = draft.trim()
+                        if (message.isNotEmpty()) {
+                            sending = true
+                            notice = "正在发送并等待回复…"
+                            scope.launch {
+                                runCatching { ApiClient.sendChat(server, message) }
+                                    .onSuccess { draft = ""; notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server) }
+                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), message); draft = ""; notice = "电脑暂时不可达，消息已进入离线队列" }
+                                sending = false
+                            }
+                        }
+                    }, onPickFiles = { filePicker.launch(arrayOf("*/*")) })
+                    1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
+                    2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
+                    else -> SettingsScreen(server, { server = it }, connected, onSave = {
+                        server = server.trim().trimEnd('/')
+                        preferences.edit().putString("server", server).apply()
+                        scope.launch { refresh() }
+                    }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationScreen(chats: List<ChatExchange>, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
+            if (chats.isEmpty()) item { Text("这里会实时显示手机和电脑两端的会话。", color = Color.Gray, modifier = Modifier.padding(12.dp)) }
+            items(chats, key = { it.id }) { chat ->
+                MessageBubble(chat.user, true)
+                MessageBubble(chat.assistant.ifBlank { "正在处理…" }, false)
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = onPickFiles, enabled = !uploading) { Text(if (uploading) "上传中" else "文件") }
+            OutlinedTextField(draft, onDraft, Modifier.weight(1f), placeholder = { Text("输入消息…") }, maxLines = 4)
+            Button(onClick = onSend, enabled = draft.isNotBlank() && !sending) { Text(if (sending) "…" else "发送") }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(text: String, fromUser: Boolean) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
+        Surface(color = if (fromUser) Forest else Color(0xFFFFFDF8), shape = RoundedCornerShape(15.dp), tonalElevation = if (fromUser) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 310.dp)) {
+            Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = if (fromUser) Color.White else Color(0xFF26332D), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun EventsScreen(events: List<CollectedEvent>, onRefresh: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        SectionHeader("已采集内容", "短信与通知按时间同步到电脑", "刷新", onRefresh)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
+            if (events.isEmpty()) item { Text("暂无记录。只有授权后新收到的短信和通知会显示在这里。", color = Color.Gray) }
+            items(events, key = { it.id }) { event ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("${if (event.source == "sms") "短信" else "通知"} · ${event.title}", style = MaterialTheme.typography.titleSmall)
+                    Text(event.content, style = MaterialTheme.typography.bodyMedium)
+                    Text(event.createdAt, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilesScreen(files: List<RemoteFile>, uploading: Boolean, onPickFiles: () -> Unit, onDelete: (RemoteFile) -> Unit) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        SectionHeader("上传记录", "手机和电脑上传的文件统一显示", if (uploading) "上传中" else "上传文件", onPickFiles)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
+            if (files.isEmpty()) item { Text("还没有上传记录。", color = Color.Gray) }
+            items(files, key = { it.hash }) { file ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(file.name, style = MaterialTheme.typography.titleSmall)
+                    Text(file.summary.ifBlank { "暂无分析结果" }, maxLines = 3, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(file.createdAt, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        TextButton(onClick = { onDelete(file) }) { Text("删除", color = Color(0xFFA04339)) }
+                    }
+                } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, subtitle: String, action: String, onAction: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Column { Text(title, style = MaterialTheme.typography.headlineSmall); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
+        TextButton(onClick = onAction) { Text(action) }
+    }
+}
+
+@Composable
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, connected: Boolean?, onSave: () -> Unit, onNotifications: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("连接电脑", style = MaterialTheme.typography.headlineSmall)
+        OutlinedTextField(server, onServer, label = { Text("核心服务地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("保存并测试连接") }
+        Text(if (connected == true) "已成功访问电脑的第二大脑服务。" else "请确保两台设备连接同一 Wi-Fi，电脑服务使用 --host 0.0.0.0 启动。", color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
+        Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
     }
 }
