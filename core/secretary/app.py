@@ -5,6 +5,7 @@ import os
 import shutil
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
@@ -25,7 +26,7 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 DB = Database(ROOT / "data" / "second-brain.db")
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
@@ -299,9 +300,41 @@ def route_save(body: RouteInput):
 @app.get("/api/usage")
 def usage():
     MODELS.seed_known_prices()
-    rows = DB.rows("SELECT COALESCE(SUM(prompt_tokens),0) prompt_tokens,COALESCE(SUM(completion_tokens),0) completion_tokens,COALESCE(SUM(estimated_cost),0) estimated_cost FROM ai_calls WHERE created_at >= date('now','start of month')")
-    breakdown = DB.rows("SELECT provider,model,SUM(prompt_tokens) prompt_tokens,SUM(completion_tokens) completion_tokens,SUM(estimated_cost) estimated_cost FROM ai_calls WHERE created_at >= date('now','start of month') GROUP BY provider,model HAVING SUM(prompt_tokens)+SUM(completion_tokens)>0 ORDER BY estimated_cost DESC")
+    rows = DB.rows("SELECT COALESCE(SUM(prompt_tokens),0) prompt_tokens,COALESCE(SUM(completion_tokens),0) completion_tokens,COALESCE(SUM(estimated_cost),0) estimated_cost FROM ai_calls")
+    breakdown = DB.rows("SELECT provider,model,SUM(prompt_tokens) prompt_tokens,SUM(completion_tokens) completion_tokens,SUM(estimated_cost) estimated_cost FROM ai_calls GROUP BY provider,model HAVING SUM(prompt_tokens)+SUM(completion_tokens)>0 ORDER BY estimated_cost DESC")
     return {**rows[0], "breakdown": breakdown}
+
+
+@app.get("/api/usage/activity")
+def usage_activity(days: int = 365):
+    days = max(7, min(days, 730))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    rows = DB.rows(
+        "SELECT substr(created_at,1,10) day,COALESCE(SUM(prompt_tokens),0) prompt_tokens,"
+        "COALESCE(SUM(completion_tokens),0) completion_tokens,COALESCE(SUM(estimated_cost),0) estimated_cost "
+        "FROM ai_calls WHERE substr(created_at,1,10)>=? AND substr(created_at,1,10)<=? GROUP BY day",
+        (start.isoformat(), end.isoformat()),
+    )
+    by_day = {row["day"]: row for row in rows}
+    activity = []
+    for offset in range(days):
+        day = (start + timedelta(days=offset)).isoformat()
+        row = by_day.get(day, {})
+        prompt = int(row.get("prompt_tokens", 0))
+        completion = int(row.get("completion_tokens", 0))
+        activity.append({
+            "date": day,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "estimated_cost": float(row.get("estimated_cost", 0)),
+        })
+    totals = DB.rows(
+        "SELECT COALESCE(SUM(prompt_tokens),0) prompt_tokens,COALESCE(SUM(completion_tokens),0) completion_tokens,"
+        "COALESCE(SUM(estimated_cost),0) estimated_cost FROM ai_calls"
+    )[0]
+    return {"start": start.isoformat(), "end": end.isoformat(), "days": activity, "totals": totals}
 
 
 @app.post("/api/ingest/sms")

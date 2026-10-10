@@ -109,6 +109,31 @@ class RouterTests(unittest.TestCase):
                 answer = router._openai_call("smart", "medium", "model", [{"role": "user", "content": "question"}], 0.2)
             self.assertEqual(answer, "first\n\nsecond")
 
+    def test_openai_input_output_token_aliases_are_recorded(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("alias", "https://example.com/v1", "key", ["model"])
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{"input_tokens":123,"output_tokens":45}}'
+            with patch("urllib.request.urlopen", return_value=response):
+                router._openai_call("smart", "alias", "model", [{"role": "user", "content": "question"}], 0.2)
+            call = database.rows("SELECT prompt_tokens,completion_tokens FROM ai_calls")[0]
+            self.assertEqual((call["prompt_tokens"], call["completion_tokens"]), (123, 45))
+
+    def test_missing_usage_is_estimated_locally(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("estimate", "https://example.com/v1", "key", ["model"])
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"estimated answer"},"finish_reason":"stop"}]}'
+            with patch("urllib.request.urlopen", return_value=response):
+                router._openai_call("smart", "estimate", "model", [{"role": "user", "content": "estimate this question"}], 0.2)
+            call = database.rows("SELECT prompt_tokens,completion_tokens FROM ai_calls")[0]
+            self.assertGreater(call["prompt_tokens"], 0)
+            self.assertGreater(call["completion_tokens"], 0)
+
     def test_email_account_schema_does_not_expose_secret_in_listing_query(self):
         with TemporaryDirectory() as temp:
             database = Database(Path(temp) / "db.sqlite")

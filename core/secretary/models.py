@@ -4,6 +4,7 @@ import json
 import base64
 import io
 import mimetypes
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -206,14 +207,18 @@ class ModelRouter:
                 with urllib.request.urlopen(request, timeout=90) as response:
                     result = json.loads(response.read())
                 usage = result.get("usage", {})
-                prompt_tokens += int(usage.get("prompt_tokens", 0))
-                completion_tokens += int(usage.get("completion_tokens", 0))
                 choice = result["choices"][0]
                 content = choice["message"].get("content")
                 if isinstance(content, list):
                     content = "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("text"))
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("模型返回了空内容，请更换模型或调整消耗程度后重试")
+                upstream_prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+                upstream_completion = usage.get("completion_tokens", usage.get("output_tokens"))
+                prompt_value = int(upstream_prompt or 0)
+                completion_value = int(upstream_completion or 0)
+                prompt_tokens += prompt_value if prompt_value > 0 else self._estimate_tokens(conversation)
+                completion_tokens += completion_value if completion_value > 0 else self._estimate_tokens(content)
                 parts.append(content.strip())
                 truncated = choice.get("finish_reason") == "length"
                 if not truncated:
@@ -237,6 +242,23 @@ class ModelRouter:
                     "INSERT INTO ai_calls(created_at,task,provider,model,prompt_tokens,completion_tokens,estimated_cost,status,error) VALUES(?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(timespec="seconds"), task, provider_name, model, prompt_tokens, completion_tokens, cost, status, error),
                 )
+
+    @classmethod
+    def _estimate_tokens(cls, value) -> int:
+        """Estimate usage only when an OpenAI-compatible provider omits usage data."""
+        if value is None:
+            return 0
+        if isinstance(value, str):
+            if value.startswith("data:") and ";base64," in value[:100]:
+                return 0
+            cjk = len(re.findall(r"[\u3400-\u9fff]", value))
+            other = len(re.sub(r"\s|[\u3400-\u9fff]", "", value))
+            return max(1, round(cjk * 0.8 + other / 4)) if value.strip() else 0
+        if isinstance(value, dict):
+            return sum(cls._estimate_tokens(item) for item in value.values()) + 3
+        if isinstance(value, (list, tuple)):
+            return sum(cls._estimate_tokens(item) for item in value)
+        return cls._estimate_tokens(str(value))
 
 
 PROVIDER_TEMPLATES = {
