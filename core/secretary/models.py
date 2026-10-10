@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import base64
+import io
+import mimetypes
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -35,7 +38,7 @@ class ModelRouter:
         with self.database.connect() as db:
             db.execute(
                 "INSERT INTO providers(name,base_url,api_key,models,kind) VALUES(?,?,?,?,?) "
-                "ON CONFLICT(name) DO UPDATE SET base_url=excluded.base_url,api_key=excluded.api_key,models=excluded.models,kind=excluded.kind",
+                "ON CONFLICT(name) DO UPDATE SET base_url=excluded.base_url,api_key=CASE WHEN excluded.api_key='' THEN providers.api_key ELSE excluded.api_key END,models=excluded.models,kind=excluded.kind",
                 (name, base_url.rstrip("/"), api_key, json.dumps(models, ensure_ascii=False), kind),
             )
 
@@ -53,13 +56,18 @@ class ModelRouter:
         rows = self.database.rows("SELECT * FROM model_routes WHERE task=?", (task,))
         return Route(**rows[0]) if rows else None
 
-    def complete(self, task: str, messages: list[dict], temperature: float = 0.2) -> str:
+    def complete(self, task: str, messages: list[dict], temperature: float = 0.2, provider: Optional[str] = None, model: Optional[str] = None) -> str:
         route = self.route(task)
-        if not route:
-            raise RuntimeError(f"尚未配置 {task} 模型")
-        attempts = [(route.provider, route.model)]
-        if route.fallback_provider and route.fallback_model:
-            attempts.append((route.fallback_provider, route.fallback_model))
+        if provider or model:
+            if not provider or not model:
+                raise ValueError("临时模型必须同时指定供应商和模型")
+            attempts = [(provider, model)]
+        else:
+            if not route:
+                raise RuntimeError(f"尚未配置 {task} 模型")
+            attempts = [(route.provider, route.model)]
+            if route.fallback_provider and route.fallback_model:
+                attempts.append((route.fallback_provider, route.fallback_model))
         last_error = ""
         for provider_name, model in attempts:
             try:
@@ -71,6 +79,26 @@ class ModelRouter:
                 except Exception as retry_exc:
                     last_error = str(retry_exc)
         raise RuntimeError(f"模型调用失败：{last_error}")
+
+    def analyze_images(self, task: str, paths: list, prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
+        content = [{"type": "text", "text": prompt}]
+        for path in paths:
+            raw, mime = self._image_payload(path)
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(raw).decode()}", "detail": "auto"}})
+        return self.complete(task, [{"role": "user", "content": content}], provider=provider, model=model)
+
+    @staticmethod
+    def _image_payload(path) -> tuple[bytes, str]:
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(path) as image:
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                image.thumbnail((1600, 1600))
+                output = io.BytesIO()
+                image.save(output, format="JPEG", quality=86, optimize=True)
+                return output.getvalue(), "image/jpeg"
+        except ImportError:
+            return path.read_bytes(), mimetypes.guess_type(path.name)[0] or "image/jpeg"
 
     def _openai_call(self, task: str, provider_name: str, model: str, messages: list[dict], temperature: float) -> str:
         with self.database.connect() as db:

@@ -33,4 +33,4 @@ class ImapConnector:
                 for part in message.walk():
                     if part.get_content_type() == "text/plain" and "attachment" not in (part.get("Content-Disposition") or ""):
                         body += part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
-                yield {"subject": _decode(message.get("Subject", "")), "from": _decode(message.get("From", "")), "date": message.get("Date", ""), "body": body[:50000]}
+                yield {"uid": message.get("Message-ID") or message_id.decode(errors="replace"), "subject": _decode(message.get("Subject", "")), "from": _decode(message.get("From", "")), "date": message.get("Date", ""), "body": body[:50000]}

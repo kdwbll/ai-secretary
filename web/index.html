@@ -40,7 +40,7 @@
 
       <section id="chat" class="view split-view">
         <div class="chat-panel">
-          <div class="section-head"><div><span class="rule"></span><h3>和你的第二大脑聊聊</h3></div></div>
+          <div class="section-head chat-heading"><div><span class="rule"></span><h3>和你的第二大脑聊聊</h3></div><label class="model-picker">本轮模型<select id="chat-model"><option value="">默认 · 文字处理路由</option></select></label></div>
           <div id="messages" class="messages"><div class="message assistant">有什么正在占用你的注意力？告诉我，我会结合你的记忆一起梳理。</div></div>
           <form id="chat-form"><textarea id="chat-input" rows="2" placeholder="输入问题，或告诉我一件值得记住的事……"></textarea><button class="send" aria-label="发送">↑</button></form>
         </div>
@@ -53,14 +53,17 @@
       </section>
 
       <section id="inbox" class="view">
-        <div class="dropzone" id="dropzone"><span>↓</span><h2>把任何文件交给第二大脑</h2><p>拖入小票、体检报告、文档或表格；原件会按月归档，永不改写。</p><label class="primary">选择文件<input id="file-input" type="file" hidden></label></div>
+        <div class="dropzone" id="dropzone"><span>↓</span><h2>把图片、视频或文档交给第二大脑</h2><p>图片交给“图片处理”模型；视频先在本机抽关键帧，再交给“视频处理”模型。原件按月归档，永不改写。</p><label class="primary">选择文件<input id="file-input" type="file" accept="image/*,video/*,.pdf,.docx,.xlsx,.csv,.txt,.zip" multiple hidden></label></div>
         <div id="upload-result" class="upload-result"></div>
       </section>
 
       <section id="settings" class="view">
         <div class="settings-grid">
-          <article class="setting-card"><p class="card-label">模型供应商</p><h2>连接你的 AI</h2><form id="provider-form"><label>供应商<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option></select></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅保存在本机 SQLite"></label><label>模型<input id="provider-model" placeholder="例如 gpt-4.1-mini"></label><button class="primary" type="submit">保存供应商</button></form></article>
-          <article class="setting-card"><p class="card-label">本月用量</p><div class="metric"><strong id="tokens">0</strong><span>tokens</span></div><div class="metric"><strong id="cost">¥0.00</strong><span>估算费用</span></div><hr><p class="muted">模型密钥与调用记录只保存在你的电脑。记忆本体始终是 Markdown 文件。</p></article>
+          <article class="setting-card"><p class="card-label">01 · 供应商</p><h2>添加多个 AI</h2><form id="provider-form"><label>模板<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option><option>自定义</option></select></label><label>显示名称<input id="provider-name" value="OpenAI" placeholder="例如 我的 OpenAI"></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅保存在本机 SQLite"></label><label>模型列表<input id="provider-model" placeholder="多个模型用逗号分隔"></label><button class="primary" type="submit">保存供应商</button></form><div id="provider-list" class="provider-list"></div></article>
+          <article class="setting-card route-card"><p class="card-label">02 · 任务路由</p><h2>分别选择处理模型</h2><p class="muted">文字、图片和视频互不影响；对话页还可以临时切换模型。</p><form id="route-form"><label>文字处理 <small>对话、规划、记忆整理</small><select id="text-route"><option value="">尚未配置</option></select></label><label>图片处理 <small>照片、截图、小票、体检报告 OCR</small><select id="vision-route"><option value="">尚未配置</option></select></label><label>视频处理 <small>本机抽取关键帧后理解</small><select id="video-route"><option value="">未配置时使用图片模型</option></select></label><button class="primary" type="submit">保存任务分配</button></form></article>
+          <article class="setting-card"><p class="card-label">03 · 邮件</p><h2>连接只读邮箱</h2><p class="muted">QQ 邮箱请使用“授权码”，不是 QQ 密码。系统每 30 分钟只读同步未读邮件。</p><form id="email-form"><label>邮箱类型<select id="email-template"><option value="imap.qq.com">QQ 邮箱</option><option value="imap.163.com">163 邮箱</option><option value="imap.126.com">126 邮箱</option><option value="custom">自定义 IMAP</option></select></label><label>IMAP 地址<input id="email-host" value="imap.qq.com"></label><label>邮箱账号<input id="email-user" type="email" placeholder="name@qq.com"></label><label>授权码<input id="email-code" type="password" autocomplete="off" placeholder="邮箱设置中生成的授权码"></label><div class="button-row"><button class="primary" type="submit">保存邮箱</button><button class="secondary" id="sync-email" type="button">立即同步</button></div></form><div id="email-status" class="connection-status">尚未连接</div></article>
+          <article class="setting-card"><p class="card-label">04 · 短信与通知</p><h2>由 Android 手机采集</h2><ol class="steps"><li>在 Android Studio 编译并安装 <code>android/</code>。</li><li>手机与电脑连接同一可信 Wi‑Fi。</li><li>在 App 中填入电脑局域网地址。</li><li>明确授予短信和通知读取权限。</li></ol><p class="muted">短信先在手机离线排队，连上电脑后同步；验证码和营销短信会自动忽略。</p></article>
+          <article class="setting-card usage-card"><p class="card-label">本月用量</p><div class="metric"><strong id="tokens">0</strong><span>tokens</span></div><div class="metric"><strong id="cost">¥0.00</strong><span>估算费用</span></div><hr><p class="muted">模型密钥与调用记录只保存在你的电脑。记忆本体始终是 Markdown 文件。</p></article>
         </div>
       </section>
     </main>

@@ -52,7 +52,7 @@ class SecretaryService:
                 paths.append(daily)
         return "\n\n".join(f"## {path}\n{self.memory.storage.read_text(path)}" for path in dict.fromkeys(paths))
 
-    def chat(self, message: str) -> dict[str, Any]:
+    def chat(self, message: str, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
         message = message.strip()
         forget = re.match(r"^(?:请)?忘掉|^(?:请)?忘记", message)
         if forget:
@@ -64,13 +64,23 @@ class SecretaryService:
         paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
         try:
             system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
-            answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}])
+            answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
         except RuntimeError:
             answer = self._local_answer(message, context, paths)
         self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", "对话")
         self._extract_local_fact(message)
         self.memory.rebuild_index()
         return {"answer": answer, "sources": paths}
+
+    def ingest_email(self, subject: str, sender: str, body: str) -> dict[str, Any]:
+        summary = f"邮件《{subject or '无主题'}》来自 {sender or '未知发件人'}"
+        event = parse_sms(f"{subject}\n{body}", sender)
+        if event.kind not in {"unknown", "ignored"}:
+            self._apply_event(event, "邮件")
+        else:
+            self.memory.append_daily(summary, "邮件")
+        self.database.add_event("email", event.kind if not event.ignored else "ignored", {"subject": subject, "sender": sender, "summary": summary})
+        return {"subject": subject, "kind": event.kind}
 
     def _local_answer(self, message: str, context: str, paths: list[str]) -> str:
         facts = [line[2:] for line in context.splitlines() if line.startswith("- ")][:5]

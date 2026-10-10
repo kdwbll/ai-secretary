@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS files (
   hash TEXT PRIMARY KEY, original_name TEXT NOT NULL, stored_path TEXT NOT NULL,
   created_at TEXT NOT NULL, extracted_text TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS email_accounts (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 993,
+  username TEXT UNIQUE NOT NULL, authorization_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  last_sync TEXT
+);
+CREATE TABLE IF NOT EXISTS email_seen (
+  account_id INTEGER NOT NULL, message_uid TEXT NOT NULL, processed_at TEXT NOT NULL,
+  PRIMARY KEY(account_id, message_uid)
+);
 """
 
 

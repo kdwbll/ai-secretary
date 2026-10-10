@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .database import Database
+from .connectors import ImapConnector
 from .files import FilePipeline
 from .memory import MemoryDocument, MemoryEngine
 from .models import ModelRouter, PROVIDER_TEMPLATES, Route
@@ -26,12 +27,14 @@ DB = Database(ROOT / "data" / "second-brain.db")
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
 SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts")
-FILES = FilePipeline(ROOT / "files", DB, MEMORY)
+FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB)
 
 
 class ChatInput(BaseModel):
     message: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class MemoryInput(BaseModel):
@@ -65,6 +68,39 @@ class NotificationInput(BaseModel):
     text: str
 
 
+class EmailAccountInput(BaseModel):
+    name: str
+    host: str
+    port: int = 993
+    username: str
+    authorization_code: str = ""
+    enabled: bool = True
+
+
+def sync_email_accounts() -> dict:
+    accounts = DB.rows("SELECT * FROM email_accounts WHERE enabled=1 ORDER BY id")
+    result = {"accounts": [], "messages": 0}
+    for account in accounts:
+        item = {"name": account["name"], "username": account["username"], "ok": False, "count": 0}
+        try:
+            connector = ImapConnector(account["host"], account["username"], account["authorization_code"], account["port"])
+            for message in connector.unread(20):
+                if DB.rows("SELECT 1 FROM email_seen WHERE account_id=? AND message_uid=?", (account["id"], message["uid"])):
+                    continue
+                SERVICE.ingest_email(message["subject"], message["from"], message["body"])
+                with DB.connect() as db:
+                    db.execute("INSERT OR IGNORE INTO email_seen(account_id,message_uid,processed_at) VALUES(?,?,datetime('now','localtime'))", (account["id"], message["uid"]))
+                item["count"] += 1
+            with DB.connect() as db:
+                db.execute("UPDATE email_accounts SET last_sync=datetime('now','localtime') WHERE id=?", (account["id"],))
+            item["ok"] = True
+            result["messages"] += item["count"]
+        except Exception as exc:
+            item["error"] = str(exc)
+        result["accounts"].append(item)
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SERVICE.initialize()
@@ -77,6 +113,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(REPORTS.morning, "cron", hour=morning_hour, minute=morning_minute, id="morning")
         scheduler.add_job(REPORTS.evening, "cron", hour=review_hour, minute=review_minute, id="evening")
         scheduler.add_job(REPORTS.weekly, "cron", day_of_week="sun", hour=23, minute=0, id="weekly")
+        scheduler.add_job(sync_email_accounts, "interval", minutes=30, id="email-sync", max_instances=1)
         scheduler.start()
     except ImportError:
         pass
@@ -95,7 +132,7 @@ def health():
 
 @app.post("/api/chat")
 def chat(body: ChatInput):
-    return SERVICE.chat(body.message)
+    return SERVICE.chat(body.message, body.provider, body.model)
 
 
 @app.get("/api/interview")
@@ -145,6 +182,34 @@ def providers():
 def provider_save(body: ProviderInput):
     MODELS.save_provider(body.name, body.base_url, body.api_key, body.models, body.kind)
     return {"ok": True}
+
+
+@app.get("/api/email/accounts")
+def email_accounts():
+    return {"accounts": DB.rows("SELECT id,name,host,port,username,enabled,last_sync FROM email_accounts ORDER BY id")}
+
+
+@app.post("/api/email/accounts")
+def email_account_save(body: EmailAccountInput):
+    if not body.authorization_code:
+        existing = DB.rows("SELECT authorization_code FROM email_accounts WHERE username=?", (body.username,))
+        if not existing:
+            raise HTTPException(400, "首次连接必须填写邮箱授权码")
+        authorization_code = existing[0]["authorization_code"]
+    else:
+        authorization_code = body.authorization_code
+    with DB.connect() as db:
+        db.execute(
+            "INSERT INTO email_accounts(name,host,port,username,authorization_code,enabled) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(username) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,authorization_code=excluded.authorization_code,enabled=excluded.enabled",
+            (body.name, body.host, body.port, body.username, authorization_code, int(body.enabled)),
+        )
+    return {"ok": True}
+
+
+@app.post("/api/email/sync")
+def email_sync():
+    return sync_email_accounts()
 
 
 @app.post("/api/routes")
