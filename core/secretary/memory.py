@@ -153,6 +153,34 @@ class MemoryEngine:
         self.rebuild_index()
         return changed
 
+    def remove_chat_memory(self, chat_id: int) -> int:
+        """Remove only memory lines tagged as originating from one chat exchange."""
+        # Include the closing source marker so deleting #1 never matches #10.
+        marker = f"对话 #{chat_id})"
+        changed = 0
+        for path in list(self.storage.list(".md")):
+            if path == "index.md":
+                continue
+            doc = self.parse(path)
+            lines = doc.body.splitlines()
+            indexes = [index for index, line in enumerate(lines) if marker in line]
+            if not indexes:
+                continue
+            remove: set[int] = set(indexes)
+            if path.startswith("daily/"):
+                for index in indexes:
+                    start = index
+                    while start >= 0 and not re.match(r"^- \d{2}:\d{2} 用户：", lines[start]):
+                        start -= 1
+                    if start >= 0:
+                        remove.update(range(start, index + 1))
+            doc.body = "\n".join(line for index, line in enumerate(lines) if index not in remove).rstrip() + "\n"
+            self.save(doc, f"删除对话 #{chat_id} 的关联记忆", "user")
+            changed += len(indexes)
+        if changed:
+            self.rebuild_index()
+        return changed
+
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         terms = [term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if term]
         results = []

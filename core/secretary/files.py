@@ -16,6 +16,7 @@ from .models import ModelRouter
 class FilePipeline:
     IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif"}
     VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+    RETRY_MARKERS = ("请先在设置中配置", "模型分析失败", "关键帧分析失败")
 
     def __init__(self, files_root: Path, database: Database, memory: MemoryEngine, models: ModelRouter):
         self.files_root, self.database, self.memory, self.models = files_root, database, memory, models
@@ -24,7 +25,12 @@ class FilePipeline:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         existing = self.database.rows("SELECT * FROM files WHERE hash=?", (digest,))
         if existing:
-            return {**existing[0], "duplicate": True}
+            record = existing[0]
+            can_reanalyze = Path(record["stored_path"]).suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES
+            if can_reanalyze and any(marker in record["extracted_text"] for marker in self.RETRY_MARKERS):
+                result = self.reanalyze(digest)
+                return {**result, "duplicate": True, "reanalyzed": True, "can_reanalyze": True}
+            return {**record, "duplicate": True, "reanalyzed": False, "can_reanalyze": can_reanalyze}
         month = date.today().strftime("%Y-%m")
         target_dir = self.files_root / month
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -37,7 +43,24 @@ class FilePipeline:
         with self.database.connect() as db:
             db.execute("INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)", (digest, original_name, relative, datetime.now().isoformat(timespec="seconds"), text))
         self.memory.append_daily(f"收录文件 [{original_name}](../../{relative})：{text[:300] or '暂无可提取文字'}", "文件上传", inferred=not bool(text))
-        return {"hash": digest, "original_name": original_name, "stored_path": relative, "extracted_text": text, "duplicate": False}
+        return {"hash": digest, "original_name": original_name, "stored_path": relative, "extracted_text": text, "duplicate": False, "reanalyzed": False, "can_reanalyze": target.suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES}
+
+    def reanalyze(self, digest: str) -> dict:
+        rows = self.database.rows("SELECT * FROM files WHERE hash=?", (digest,))
+        if not rows:
+            raise KeyError("文件不存在")
+        record = rows[0]
+        path = (self.files_root.parent / record["stored_path"]).resolve()
+        root = self.files_root.parent.resolve()
+        if root not in path.parents or not path.is_file():
+            raise FileNotFoundError("原始文件不存在")
+        if path.suffix.lower() not in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES:
+            raise ValueError("只有图片和视频支持重新分析")
+        text = self.extract(path)
+        with self.database.connect() as db:
+            db.execute("UPDATE files SET extracted_text=? WHERE hash=?", (text, digest))
+        self.memory.append_daily(f"重新分析文件 [{record['original_name']}](../../{record['stored_path']})：{text[:300]}", "文件重新分析", inferred=False)
+        return {**record, "extracted_text": text, "duplicate": True, "reanalyzed": True, "can_reanalyze": True}
 
     def extract(self, path: Path) -> str:
         suffix = path.suffix.lower()

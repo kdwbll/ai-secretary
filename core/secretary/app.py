@@ -37,6 +37,10 @@ class ChatInput(BaseModel):
     model: Optional[str] = None
 
 
+class ChatDeleteInput(BaseModel):
+    delete_memory: bool = False
+
+
 class MemoryInput(BaseModel):
     content: str
 
@@ -135,6 +139,19 @@ def chat(body: ChatInput):
     return SERVICE.chat(body.message, body.provider, body.model)
 
 
+@app.get("/api/chats")
+def chats(limit: int = 100):
+    return {"chats": SERVICE.chat_history(limit)}
+
+
+@app.delete("/api/chats/{chat_id}")
+def chat_delete(chat_id: int, body: ChatDeleteInput):
+    try:
+        return SERVICE.delete_chat(chat_id, body.delete_memory)
+    except KeyError:
+        raise HTTPException(404, "聊天记录不存在")
+
+
 @app.get("/api/interview")
 def interview():
     return {"questions": SERVICE.interview_questions()}
@@ -182,6 +199,14 @@ def providers():
 def provider_save(body: ProviderInput):
     MODELS.save_provider(body.name, body.base_url, body.api_key, body.models, body.kind)
     return {"ok": True}
+
+
+@app.delete("/api/providers/{provider_id}")
+def provider_delete(provider_id: int):
+    name = MODELS.delete_provider(provider_id)
+    if not name:
+        raise HTTPException(404, "供应商不存在")
+    return {"ok": True, "name": name}
 
 
 @app.get("/api/email/accounts")
@@ -244,6 +269,16 @@ async def upload(file: UploadFile = File(...)):
         return FILES.ingest(temp_path, file.filename or "upload")
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@app.post("/api/files/{digest}/reanalyze")
+def file_reanalyze(digest: str):
+    try:
+        return FILES.reanalyze(digest)
+    except KeyError:
+        raise HTTPException(404, "文件不存在")
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/reports/{kind}")

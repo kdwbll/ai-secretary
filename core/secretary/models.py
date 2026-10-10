@@ -52,6 +52,17 @@ class ModelRouter:
                 (route.task, route.provider, route.model, route.fallback_provider, route.fallback_model),
             )
 
+    def delete_provider(self, provider_id: int) -> Optional[str]:
+        with self.database.connect() as db:
+            row = db.execute("SELECT name FROM providers WHERE id=?", (provider_id,)).fetchone()
+            if not row:
+                return None
+            name = row["name"]
+            db.execute("DELETE FROM model_routes WHERE provider=?", (name,))
+            db.execute("UPDATE model_routes SET fallback_provider=NULL,fallback_model=NULL WHERE fallback_provider=?", (name,))
+            db.execute("DELETE FROM providers WHERE id=?", (provider_id,))
+        return name
+
     def route(self, task: str) -> Optional[Route]:
         rows = self.database.rows("SELECT * FROM model_routes WHERE task=?", (task,))
         return Route(**rows[0]) if rows else None

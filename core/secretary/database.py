@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS email_seen (
   account_id INTEGER NOT NULL, message_uid TEXT NOT NULL, processed_at TEXT NOT NULL,
   PRIMARY KEY(account_id, message_uid)
 );
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, user_message TEXT NOT NULL,
+  assistant_message TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '[]',
+  provider TEXT, model TEXT
+);
 """
 
 

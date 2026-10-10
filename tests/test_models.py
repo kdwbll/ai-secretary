@@ -26,6 +26,18 @@ class RouterTests(unittest.TestCase):
                 secret = db.execute("SELECT api_key FROM providers WHERE name='cloud'").fetchone()[0]
             self.assertEqual(secret, "kept-secret")
 
+    def test_delete_provider_clears_routes_but_keeps_other_providers(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("remove", "https://one/v1", "a", ["m1"])
+            router.save_provider("keep", "https://two/v1", "b", ["m2"])
+            router.set_route(Route("smart", "remove", "m1"))
+            provider_id = next(p["id"] for p in router.providers() if p["name"] == "remove")
+            self.assertEqual(router.delete_provider(provider_id), "remove")
+            self.assertIsNone(router.route("smart"))
+            self.assertEqual([p["name"] for p in router.providers()], ["keep"])
+
     def test_per_chat_model_override(self):
         with TemporaryDirectory() as temp:
             router = ModelRouter(Database(Path(temp) / "db.sqlite"))

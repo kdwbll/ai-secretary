@@ -54,11 +54,19 @@ class SecretaryService:
 
     def chat(self, message: str, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
         message = message.strip()
+        with self.database.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO chat_messages(created_at,user_message,provider,model) VALUES(datetime('now','localtime'),?,?,?)",
+                (message, provider, model),
+            )
+            chat_id = int(cursor.lastrowid)
         forget = re.match(r"^(?:请)?忘掉|^(?:请)?忘记", message)
         if forget:
             phrase = re.sub(r"^(?:请)?(?:忘掉|忘记)\s*", "", message).strip("。！! ")
             count = self.memory.forget(phrase)
-            return {"answer": f"已从记忆中删除与“{phrase}”有关的 {count} 条内容，并加入禁止记录规则。", "sources": ["me.md"]}
+            result = {"id": chat_id, "answer": f"已从记忆中删除与“{phrase}”有关的 {count} 条内容，并加入禁止记录规则。", "sources": ["me.md"]}
+            self._finish_chat(chat_id, result["answer"], result["sources"])
+            return result
 
         context = self._context(message)
         paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
@@ -67,10 +75,35 @@ class SecretaryService:
             answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
         except RuntimeError:
             answer = self._local_answer(message, context, paths)
-        self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", "对话")
-        self._extract_local_fact(message)
+        self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
+        self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
         self.memory.rebuild_index()
-        return {"answer": answer, "sources": paths}
+        self._finish_chat(chat_id, answer, paths)
+        return {"id": chat_id, "answer": answer, "sources": paths}
+
+    def _finish_chat(self, chat_id: int, answer: str, sources: list[str]) -> None:
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE chat_messages SET assistant_message=?,sources=? WHERE id=?",
+                (answer, json.dumps(sources, ensure_ascii=False), chat_id),
+            )
+
+    def chat_history(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.database.rows(
+            "SELECT id,created_at,user_message,assistant_message,sources,provider,model FROM chat_messages ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        )
+        for row in rows:
+            row["sources"] = json.loads(row["sources"] or "[]")
+        return rows
+
+    def delete_chat(self, chat_id: int, delete_memory: bool = False) -> dict[str, Any]:
+        if not self.database.rows("SELECT id FROM chat_messages WHERE id=?", (chat_id,)):
+            raise KeyError("聊天记录不存在")
+        removed_memories = self.memory.remove_chat_memory(chat_id) if delete_memory else 0
+        with self.database.connect() as db:
+            db.execute("DELETE FROM chat_messages WHERE id=?", (chat_id,))
+        return {"ok": True, "removed_memories": removed_memories}
 
     def ingest_email(self, subject: str, sender: str, body: str) -> dict[str, Any]:
         summary = f"邮件《{subject or '无主题'}》来自 {sender or '未知发件人'}"
@@ -87,7 +120,7 @@ class SecretaryService:
         basis = "；".join(facts) if facts else "目前记忆信息还很少"
         return f"我已结合你的本地记忆分析。{basis}。针对“{message}”，建议先明确最迟完成时间与下一步动作，再把下一步安排到今天；如果你补充限制条件，我可以继续细化。"
 
-    def _extract_local_fact(self, message: str) -> None:
+    def _extract_local_fact(self, message: str, source: Optional[str] = None) -> None:
         if len(message) < 4 or message.endswith("?") or message.endswith("？"):
             return
         best = max(DOMAIN_HINTS.items(), key=lambda item: sum(h in message for h in item[1]))
@@ -95,7 +128,7 @@ class SecretaryService:
             return
         repeated = any(word in message for word in ("每天", "经常", "通常", "习惯"))
         section = {"health.md": "当前状况", "finance.md": "收支与预算", "habits.md": "作息", "work-study.md": "当前事项", "interests.md": "兴趣与娱乐", "me.md": "基本信息"}[best[0]]
-        self.memory.upsert_fact(best[0], section, message.rstrip("。"), f"{date.today().isoformat()} 对话", inferred=not repeated and best[0] == "habits.md")
+        self.memory.upsert_fact(best[0], section, message.rstrip("。"), source or f"{date.today().isoformat()} 对话", inferred=not repeated and best[0] == "habits.md")
 
     def ingest_sms(self, text: str, sender: str = "") -> dict:
         event = parse_sms(text, sender)
