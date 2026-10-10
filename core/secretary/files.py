@@ -16,7 +16,8 @@ from .models import ModelRouter
 class FilePipeline:
     IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif"}
     VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
-    RETRY_MARKERS = ("请先在设置中配置", "模型分析失败", "关键帧分析失败")
+    DOCUMENT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log", ".pdf", ".doc", ".docx", ".xlsx", ".xlsm", ".zip"}
+    RETRY_MARKERS = ("请先在设置中配置", "模型分析失败", "关键帧分析失败", "解析失败", "解析组件未安装")
 
     def __init__(self, files_root: Path, database: Database, memory: MemoryEngine, models: ModelRouter):
         self.files_root, self.database, self.memory, self.models = files_root, database, memory, models
@@ -26,8 +27,9 @@ class FilePipeline:
         existing = self.database.rows("SELECT * FROM files WHERE hash=?", (digest,))
         if existing:
             record = existing[0]
-            can_reanalyze = Path(record["stored_path"]).suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES
-            if can_reanalyze and any(marker in record["extracted_text"] for marker in self.RETRY_MARKERS):
+            can_reanalyze = Path(record["stored_path"]).suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES | self.DOCUMENT_SUFFIXES
+            failed_before = not record["extracted_text"].strip() or any(marker in record["extracted_text"] for marker in self.RETRY_MARKERS)
+            if can_reanalyze and failed_before:
                 result = self.reanalyze(digest)
                 return {**result, "duplicate": True, "reanalyzed": True, "can_reanalyze": True}
             return {**record, "duplicate": True, "reanalyzed": False, "can_reanalyze": can_reanalyze}
@@ -43,7 +45,7 @@ class FilePipeline:
         with self.database.connect() as db:
             db.execute("INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)", (digest, original_name, relative, datetime.now().isoformat(timespec="seconds"), text))
         self.memory.append_daily(f"收录文件 [{original_name}](../../{relative})：{text[:300] or '暂无可提取文字'}", "文件上传", inferred=not bool(text))
-        return {"hash": digest, "original_name": original_name, "stored_path": relative, "extracted_text": text, "duplicate": False, "reanalyzed": False, "can_reanalyze": target.suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES}
+        return {"hash": digest, "original_name": original_name, "stored_path": relative, "extracted_text": text, "duplicate": False, "reanalyzed": False, "can_reanalyze": target.suffix.lower() in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES | self.DOCUMENT_SUFFIXES}
 
     def reanalyze(self, digest: str) -> dict:
         rows = self.database.rows("SELECT * FROM files WHERE hash=?", (digest,))
@@ -54,8 +56,8 @@ class FilePipeline:
         root = self.files_root.parent.resolve()
         if root not in path.parents or not path.is_file():
             raise FileNotFoundError("原始文件不存在")
-        if path.suffix.lower() not in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES:
-            raise ValueError("只有图片和视频支持重新分析")
+        if path.suffix.lower() not in self.IMAGE_SUFFIXES | self.VIDEO_SUFFIXES | self.DOCUMENT_SUFFIXES:
+            raise ValueError("这种文件格式暂不支持重新分析")
         text = self.extract(path)
         with self.database.connect() as db:
             db.execute("UPDATE files SET extracted_text=? WHERE hash=?", (text, digest))
@@ -86,6 +88,8 @@ class FilePipeline:
                 return "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)[:200000]
             except ImportError:
                 return "PDF 解析组件未安装，请安装 documents 可选依赖"
+        if suffix == ".doc":
+            return self._legacy_word_text(path)
         if suffix == ".docx":
             try:
                 from docx import Document
@@ -123,6 +127,27 @@ class FilePipeline:
             except Exception as exc:
                 return f"视频已归档，但关键帧分析失败：{exc}"
         return ""
+
+    @staticmethod
+    def _legacy_word_text(path: Path) -> str:
+        commands = []
+        if shutil.which("textutil"):
+            commands.append(["textutil", "-convert", "txt", "-stdout", str(path)])
+        if shutil.which("antiword"):
+            commands.append(["antiword", str(path)])
+        if not commands:
+            return "旧版 Word 解析组件未安装；请将 .doc 另存为 .docx 后重新上传"
+        errors = []
+        for command in commands:
+            try:
+                result = subprocess.run(command, check=True, capture_output=True, timeout=60)
+                text = result.stdout.decode("utf-8", errors="replace").strip()
+                if text:
+                    return text[:200000]
+            except (subprocess.SubprocessError, OSError) as exc:
+                errors.append(str(exc))
+        detail = errors[-1] if errors else "没有提取到文字"
+        return f"旧版 Word 解析失败：{detail}；可将 .doc 另存为 .docx 后重试"
 
     @staticmethod
     def _video_frames(path: Path) -> list[Path]:

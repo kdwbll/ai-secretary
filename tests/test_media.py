@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 import subprocess
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from PIL import Image
 from core.secretary.database import Database
@@ -12,6 +13,36 @@ from core.secretary.storage import LocalStorage
 
 
 class MediaTests(unittest.TestCase):
+    def test_legacy_doc_uses_system_text_extractor(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = Database(root / "data.db")
+            memory = MemoryEngine(LocalStorage(root / "memory"), database)
+            memory.initialize()
+            pipeline = FilePipeline(root / "files", database, memory, Mock())
+            source = root / "legacy.doc"
+            source.write_bytes(b"fake-old-word")
+            completed = subprocess.CompletedProcess([], 0, "旧版 Word 正文".encode("utf-8"), b"")
+            with patch("core.secretary.files.shutil.which", return_value="/usr/bin/textutil"), patch("core.secretary.files.subprocess.run", return_value=completed):
+                self.assertEqual(pipeline.extract(source), "旧版 Word 正文")
+
+    def test_blank_duplicate_document_is_reanalyzed(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = Database(root / "data.db")
+            memory = MemoryEngine(LocalStorage(root / "memory"), database)
+            memory.initialize()
+            pipeline = FilePipeline(root / "files", database, memory, Mock())
+            source = root / "legacy.doc"
+            source.write_bytes(b"same-document")
+            with patch.object(pipeline, "extract", return_value=""):
+                first = pipeline.ingest(source, "legacy.doc")
+            with patch.object(pipeline, "extract", return_value="现在可以读取正文"):
+                second = pipeline.ingest(source, "legacy.doc")
+            self.assertTrue(second["duplicate"])
+            self.assertTrue(second["reanalyzed"])
+            self.assertEqual(second["extracted_text"], "现在可以读取正文")
+
     def test_delete_removes_file_and_database_record(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
