@@ -16,6 +16,7 @@
         <button class="nav" data-view="chat"><span>↗</span>对话</button>
         <button class="nav" data-view="memory"><span>⌘</span>记忆</button>
         <button class="nav" data-view="inbox"><span>↓</span>收件箱</button>
+        <button class="nav" data-view="health"><span>♡</span>健康</button>
         <button class="nav" data-view="settings"><span>⚙</span>设置</button>
       </nav>
       <div class="privacy"><i></i><div><b>仅存于此设备</b><small>Markdown 可读 · 随时带走</small></div></div>
@@ -57,11 +58,32 @@
         <div id="upload-result" class="upload-result"></div>
         <div class="section-head"><div><span class="rule"></span><h3>上传记录</h3></div><button class="text-button" id="refresh-uploads">刷新 ↻</button></div>
         <div id="upload-history" class="upload-history"></div>
+        <div class="section-head"><div><span class="rule"></span><h3>收件箱历史追溯</h3></div><div class="event-filters"><button class="filter-chip active" data-source="">全部</button><button class="filter-chip" data-source="email">邮件</button><button class="filter-chip" data-source="sms">短信</button><button class="filter-chip" data-source="notification">通知</button></div></div>
+        <div id="inbox-overview" class="inbox-overview"></div>
+        <div id="event-timeline" class="event-timeline"><p class="muted">正在读取采集历史…</p></div>
+      </section>
+
+      <section id="health" class="view">
+        <div class="health-topline">
+          <div><p class="card-label">近期健康状况</p><h2>只在本机汇总你的趋势</h2><p class="muted">图表仅用于个人记录，不替代医生诊断。可导入 Apple 健康、小米运动或通用 CSV/JSON 数据。</p></div>
+          <label class="primary">导入健康数据<input id="health-file" type="file" accept=".zip,.xml,.csv,.json" hidden></label>
+        </div>
+        <div id="health-metrics" class="health-metrics"></div>
+        <article class="health-chart-card">
+          <div class="chart-head"><div><p class="card-label">最近 14 天</p><h3 id="health-chart-title">健康趋势</h3></div><select id="health-metric"></select></div>
+          <div class="canvas-wrap"><canvas id="health-chart" height="280" aria-label="近期健康趋势图"></canvas><p id="health-empty" class="muted chart-empty">导入数据后，这里会显示趋势。</p></div>
+        </article>
+        <div class="health-connectors">
+          <article><b>Apple 健康</b><span>支持“导出所有健康数据”生成的 XML 或 ZIP</span><small>iPhone 健康 App → 头像 → 导出所有健康数据</small></article>
+          <article><b>小米运动健康 / Mi Fitness</b><span>支持账户数据导出的 ZIP、CSV 或 JSON</span><small>小米账号 → 隐私 → 管理数据 → Mi Fitness → 下载</small></article>
+          <article><b>Android Health Connect</b><span>已预留标准数据结构</span><small>需要手机 App 获得你的明确授权后才能自动同步</small></article>
+        </div>
+        <div id="health-import-status" class="connection-status">尚未导入健康数据</div>
       </section>
 
       <section id="settings" class="view">
         <div class="settings-grid">
-          <article class="setting-card"><p class="card-label">01 · 供应商</p><h2>添加多个 AI</h2><form id="provider-form"><label>模板<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option><option>自定义</option></select></label><label>显示名称<input id="provider-name" value="OpenAI" placeholder="例如 我的 OpenAI"></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅保存在本机 SQLite"></label><label>模型列表<input id="provider-model" placeholder="多个模型用逗号分隔"></label><button class="primary" type="submit">保存供应商</button></form><div id="provider-list" class="provider-list"></div></article>
+          <article class="setting-card"><p class="card-label">01 · 供应商</p><h2>添加多个 AI</h2><form id="provider-form"><label>模板<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option><option>自定义</option></select></label><label>显示名称<input id="provider-name" value="OpenAI" placeholder="例如 我的 OpenAI"></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅保存在本机 SQLite"></label><label>模型列表<input id="provider-model" placeholder="多个模型用逗号分隔"></label><label>单次消耗程度<select id="provider-consumption"><option value="low">小 · 更省额度，回答更短</option><option value="medium" selected>中 · 日常平衡</option><option value="high">大 · 更充分，消耗更多</option></select></label><button class="primary" type="submit">保存供应商</button></form><div id="provider-list" class="provider-list"></div></article>
           <article class="setting-card route-card"><p class="card-label">02 · 任务路由</p><h2>分别选择处理模型</h2><p class="muted">文字、图片和视频互不影响；对话页还可以临时切换模型。</p><form id="route-form"><label>文字处理 <small>对话、规划、记忆整理</small><select id="text-route"><option value="">尚未配置</option></select></label><label>图片处理 <small>照片、截图、小票、体检报告 OCR</small><select id="vision-route"><option value="">尚未配置</option></select></label><label>视频处理 <small>本机抽取关键帧后理解</small><select id="video-route"><option value="">未配置时使用图片模型</option></select></label><button class="primary" type="submit">保存任务分配</button></form></article>
           <article class="setting-card"><p class="card-label">03 · 邮件</p><h2>连接只读邮箱</h2><p class="muted">QQ 邮箱请使用“授权码”，不是 QQ 密码。系统每 30 分钟只读同步未读邮件。</p><form id="email-form"><label>邮箱类型<select id="email-template"><option value="imap.qq.com">QQ 邮箱</option><option value="imap.163.com">163 邮箱</option><option value="imap.126.com">126 邮箱</option><option value="custom">自定义 IMAP</option></select></label><label>IMAP 地址<input id="email-host" value="imap.qq.com"></label><label>邮箱账号<input id="email-user" type="email" placeholder="name@qq.com"></label><label>授权码<input id="email-code" type="password" autocomplete="off" placeholder="邮箱设置中生成的授权码"></label><div class="button-row"><button class="primary" type="submit">保存邮箱</button><button class="secondary" id="sync-email" type="button">立即同步</button></div></form><div id="email-status" class="connection-status">尚未连接</div></article>
           <article class="setting-card"><p class="card-label">04 · 短信与通知</p><h2>由 Android 手机采集</h2><ol class="steps"><li>在 Android Studio 编译并安装 <code>android/</code>。</li><li>手机与电脑连接同一可信 Wi‑Fi。</li><li>在 App 中填入电脑局域网地址。</li><li>明确授予短信和通知读取权限。</li></ol><p class="muted">短信先在手机离线排队，连上电脑后同步；验证码和营销短信会自动忽略。</p></article>

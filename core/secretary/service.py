@@ -15,9 +15,9 @@ from .parsers import ParsedEvent, parse_notification, parse_sms
 DOMAIN_HINTS = {
     "health.md": ("健康", "睡眠", "体重", "心率", "医院", "过敏", "药"),
     "finance.md": ("花", "钱", "收入", "工资", "预算", "消费", "账单", "元"),
-    "habits.md": ("习惯", "每天", "经常", "作息", "起床", "运动", "饮食"),
+    "habits.md": ("习惯", "每天", "通常", "作息", "起床", "运动", "饮食"),
     "work-study.md": ("工作", "学习", "考试", "项目", "截止", "任务"),
-    "interests.md": ("喜欢", "兴趣", "电影", "音乐", "游戏", "旅行"),
+    "interests.md": ("喜欢", "兴趣", "电影", "音乐", "游戏", "旅行", "常去", "去玩", "逛", "游玩"),
     "me.md": ("我是", "目标", "价值观", "不要", "偏好"),
 }
 
@@ -122,6 +122,15 @@ class SecretaryService:
 
     def _extract_local_fact(self, message: str, source: Optional[str] = None) -> None:
         if len(message) < 4 or message.endswith("?") or message.endswith("？"):
+            return
+        location_statement = re.search(r"(?:经常|常常|常去|喜欢)?去([^，。！？!?]{2,18}?)(?:玩|逛|吃饭|散步|运动|购物)(?:[，。！？!?]|$)", message)
+        if location_statement:
+            self.memory.upsert_fact(
+                "interests.md",
+                "常去地点",
+                message.rstrip("。"),
+                source or f"{date.today().isoformat()} 对话",
+            )
             return
         best = max(DOMAIN_HINTS.items(), key=lambda item: sum(h in message for h in item[1]))
         if sum(h in message for h in best[1]) == 0:

@@ -29,17 +29,19 @@ class ModelRouter:
         self.database = database
 
     def providers(self) -> list[dict]:
-        rows = self.database.rows("SELECT id,name,base_url,models,kind FROM providers ORDER BY name")
+        rows = self.database.rows("SELECT id,name,base_url,models,kind,consumption_level FROM providers ORDER BY name")
         for row in rows:
             row["models"] = json.loads(row["models"])
         return rows
 
-    def save_provider(self, name: str, base_url: str, api_key: str, models: list[str], kind: str = "openai") -> None:
+    def save_provider(self, name: str, base_url: str, api_key: str, models: list[str], kind: str = "openai", consumption_level: str = "medium") -> None:
+        if consumption_level not in {"low", "medium", "high"}:
+            raise ValueError("消耗程度必须是 low、medium 或 high")
         with self.database.connect() as db:
             db.execute(
-                "INSERT INTO providers(name,base_url,api_key,models,kind) VALUES(?,?,?,?,?) "
-                "ON CONFLICT(name) DO UPDATE SET base_url=excluded.base_url,api_key=CASE WHEN excluded.api_key='' THEN providers.api_key ELSE excluded.api_key END,models=excluded.models,kind=excluded.kind",
-                (name, base_url.rstrip("/"), api_key, json.dumps(models, ensure_ascii=False), kind),
+                "INSERT INTO providers(name,base_url,api_key,models,kind,consumption_level) VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET base_url=excluded.base_url,api_key=CASE WHEN excluded.api_key='' THEN providers.api_key ELSE excluded.api_key END,models=excluded.models,kind=excluded.kind,consumption_level=excluded.consumption_level",
+                (name, base_url.rstrip("/"), api_key, json.dumps(models, ensure_ascii=False), kind, consumption_level),
             )
 
     def set_route(self, route: Route) -> None:
@@ -116,7 +118,13 @@ class ModelRouter:
             provider = db.execute("SELECT * FROM providers WHERE name=?", (provider_name,)).fetchone()
         if not provider:
             raise RuntimeError(f"供应商不存在：{provider_name}")
-        payload = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode()
+        token_budgets = {"low": 512, "medium": 1024, "high": 2048}
+        payload = json.dumps({
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": token_budgets.get(provider["consumption_level"], 1024),
+        }).encode()
         request = urllib.request.Request(
             provider["base_url"].rstrip("/") + "/chat/completions",
             data=payload,

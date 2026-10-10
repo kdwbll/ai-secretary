@@ -16,6 +16,12 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(router.route("fast").model, "qwen2.5")
             self.assertEqual(router.providers()[0]["models"], ["qwen2.5"])
 
+    def test_provider_consumption_level_round_trip(self):
+        with TemporaryDirectory() as temp:
+            router = ModelRouter(Database(Path(temp) / "db.sqlite"))
+            router.save_provider("deep", "https://example.com/v1", "key", ["model"], consumption_level="high")
+            self.assertEqual(router.providers()[0]["consumption_level"], "high")
+
     def test_blank_key_does_not_replace_existing_secret(self):
         with TemporaryDirectory() as temp:
             database = Database(Path(temp) / "db.sqlite")

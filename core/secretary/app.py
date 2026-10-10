@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 from .database import Database
 from .connectors import ImapConnector
 from .files import FilePipeline
+from .health import HealthService
 from .memory import MemoryDocument, MemoryEngine
 from .models import ModelRouter, PROVIDER_TEMPLATES, Route
 from .reports import ReportService
@@ -23,13 +25,14 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 DB = Database(ROOT / "data" / "second-brain.db")
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
 SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts")
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB)
+HEALTH = HealthService(DB, MEMORY)
 
 
 class ChatInput(BaseModel):
@@ -52,6 +55,7 @@ class ProviderInput(BaseModel):
     api_key: str = ""
     models: list[str] = []
     kind: str = "openai"
+    consumption_level: str = "medium"
 
 
 class RouteInput(BaseModel):
@@ -208,7 +212,10 @@ def providers():
 
 @app.post("/api/providers")
 def provider_save(body: ProviderInput):
-    MODELS.save_provider(body.name, body.base_url, body.api_key, body.models, body.kind)
+    try:
+        MODELS.save_provider(body.name, body.base_url, body.api_key, body.models, body.kind, body.consumption_level)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return {"ok": True}
 
 
@@ -280,6 +287,27 @@ def events(source: Optional[str] = None, limit: int = 100):
     for row in rows:
         row["payload"] = json.loads(row["payload"] or "{}")
     return {"events": rows}
+
+
+@app.get("/api/health/summary")
+def health_summary(days: int = 14):
+    return HEALTH.summary(days)
+
+
+@app.post("/api/health/import")
+async def health_import(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "health-data").suffix.lower()
+    if suffix not in {".zip", ".xml", ".csv", ".json"}:
+        raise HTTPException(400, "请选择 Apple 健康 XML/ZIP，或小米运动 CSV/JSON/ZIP")
+    with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+        shutil.copyfileobj(file.file, temp)
+        temp_path = Path(temp.name)
+    try:
+        return HEALTH.import_file(temp_path, file.filename or "health-data")
+    except (ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        raise HTTPException(400, f"健康数据无法识别：{exc}")
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @app.post("/api/upload")

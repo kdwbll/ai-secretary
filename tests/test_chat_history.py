@@ -59,3 +59,15 @@ class ChatHistoryTests(TestCase):
             service = self.make_service(Path(directory))
             self.assertTrue(service.complete_interview()["completed"])
             self.assertTrue(service.profile_status()["completed"])
+
+    def test_frequent_place_updates_interests_after_initial_profile(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.complete_interview()
+            result = service.chat("我经常去春熙路玩")
+            interests = service.memory.storage.read_text("interests.md")
+            habits = service.memory.storage.read_text("habits.md")
+            self.assertIn("## 常去地点", interests)
+            self.assertIn("我经常去春熙路玩", interests)
+            self.assertIn(f"对话 #{result['id']}", interests)
+            self.assertNotIn("我经常去春熙路玩", habits)

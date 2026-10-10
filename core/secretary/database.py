@@ -12,7 +12,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS providers (
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, base_url TEXT NOT NULL,
-  api_key TEXT NOT NULL DEFAULT '', models TEXT NOT NULL DEFAULT '[]', kind TEXT NOT NULL DEFAULT 'openai'
+  api_key TEXT NOT NULL DEFAULT '', models TEXT NOT NULL DEFAULT '[]', kind TEXT NOT NULL DEFAULT 'openai',
+  consumption_level TEXT NOT NULL DEFAULT 'medium'
 );
 CREATE TABLE IF NOT EXISTS model_routes (
   task TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
@@ -52,6 +53,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   assistant_message TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '[]',
   provider TEXT, model TEXT
 );
+CREATE TABLE IF NOT EXISTS health_samples (
+  id INTEGER PRIMARY KEY, recorded_at TEXT NOT NULL, metric TEXT NOT NULL,
+  value REAL NOT NULL, unit TEXT NOT NULL DEFAULT '', source TEXT NOT NULL,
+  external_id TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_health_metric_time ON health_samples(metric, recorded_at);
 """
 
 
@@ -61,6 +68,9 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            provider_columns = {row[1] for row in db.execute("PRAGMA table_info(providers)")}
+            if "consumption_level" not in provider_columns:
+                db.execute("ALTER TABLE providers ADD COLUMN consumption_level TEXT NOT NULL DEFAULT 'medium'")
             defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5"}
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))
