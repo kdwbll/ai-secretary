@@ -20,7 +20,9 @@ http://192.168.1.20:8765
 
 ## 2. 安装 Android 伴侣 App
 
-目前仓库提供的是 Android 源码，尚未附带签名 APK：
+开发版 APK 可以直接安装；当前本机构建产物位于 `artifacts/ai-secretary-0.1.0-debug.apk`。它使用 Android 调试证书签名，适合个人测试，不适合上传应用商店。
+
+如果需要从源码重新构建：
 
 1. 在电脑安装 Android Studio，并用它打开仓库中的 `android/` 目录。
 2. 等待 Gradle 同步完成。

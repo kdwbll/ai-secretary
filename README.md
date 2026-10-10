@@ -106,7 +106,7 @@ tests/      核心单元测试
 
 ## Android
 
-用 Android Studio 打开 `android/`。高权限数据源必须由用户在手机上明确授权。短信权限在部分应用商店受到严格限制；自行安装场景仍需展示用途说明。当前环境没有 Android SDK/JDK，故仓库内仅完成源码与静态检查，APK 需在 Android Studio 中编译和真机联调。红米/HyperOS 的完整安装、连接和后台权限步骤见 [docs/android-xiaomi.md](docs/android-xiaomi.md)。
+用 Android Studio 打开 `android/`，也可以使用仓库自带的 Gradle Wrapper 构建。高权限数据源必须由用户在手机上明确授权。短信权限在部分应用商店受到严格限制；自行安装场景仍需展示用途说明。红米/HyperOS 的完整安装、连接和后台权限步骤见 [docs/android-xiaomi.md](docs/android-xiaomi.md)。
 
 ## 当前边界
 
