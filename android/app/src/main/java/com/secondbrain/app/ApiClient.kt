@@ -19,6 +19,8 @@ data class ChatExchange(val id: Long, val createdAt: String, val user: String, v
 data class CollectedEvent(val id: Long, val createdAt: String, val source: String, val kind: String, val title: String, val content: String)
 data class UploadReceipt(val name: String, val summary: String)
 data class RemoteFile(val hash: String, val name: String, val createdAt: String, val summary: String)
+data class TokenDay(val date: String, val tokens: Long, val cost: Double)
+data class TokenActivity(val totalTokens: Long, val totalCost: Double, val days: List<TokenDay>)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -91,6 +93,22 @@ object ApiClient {
                     add(RemoteFile(item.getString("hash"), item.optString("original_name"), item.optString("created_at"), item.optString("extracted_text")))
                 }
             }
+        }
+    }
+
+    suspend fun usage(server: String): TokenActivity = withContext(Dispatchers.IO) {
+        client.newCall(Request.Builder().url("${base(server)}/api/usage/activity?days=365").get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取 Token 用量失败（${response.code}）")
+            val result = JSONObject(response.body?.string().orEmpty())
+            val totals = result.getJSONObject("totals")
+            val array = result.getJSONArray("days")
+            val days = buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    add(TokenDay(item.getString("date"), item.optLong("total_tokens"), item.optDouble("estimated_cost")))
+                }
+            }
+            TokenActivity(totals.optLong("prompt_tokens") + totals.optLong("completion_tokens"), totals.optDouble("estimated_cost"), days)
         }
     }
 

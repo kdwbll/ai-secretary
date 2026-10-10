@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -52,6 +53,7 @@ fun SecondBrainApp(intent: Intent?) {
     var chats by remember { mutableStateOf<List<ChatExchange>>(emptyList()) }
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
+    var usage by remember { mutableStateOf<TokenActivity?>(null) }
     var notice by remember { mutableStateOf("正在检查电脑连接…") }
     var sending by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
@@ -65,6 +67,7 @@ fun SecondBrainApp(intent: Intent?) {
             runCatching { chats = ApiClient.chats(server) }
             runCatching { events = ApiClient.events(server) }
             runCatching { files = ApiClient.files(server) }
+            runCatching { usage = ApiClient.usage(server) }
         } else notice = "未连接电脑 · 检查同一 Wi-Fi、地址和电脑服务"
     }
 
@@ -149,7 +152,7 @@ fun SecondBrainApp(intent: Intent?) {
                     }, onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
-                    else -> SettingsScreen(server, { server = it }, connected, onSave = {
+                    else -> SettingsScreen(server, { server = it }, connected, usage, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
                         scope.launch { refresh() }
@@ -233,14 +236,66 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, connected: Boolean?, onSave: () -> Unit, onNotifications: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("连接电脑", style = MaterialTheme.typography.headlineSmall)
         OutlinedTextField(server, onServer, label = { Text("核心服务地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("保存并测试连接") }
         Text(if (connected == true) "已成功访问电脑的第二大脑服务。" else "请确保两台设备连接同一 Wi-Fi，电脑服务使用 --host 0.0.0.0 启动。", color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        item { TokenActivityCard(usage) }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         HorizontalDivider()
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TokenActivityCard(usage: TokenActivity?) {
+    var mode by remember { mutableStateOf("每天") }
+    val points = remember(usage, mode) {
+        val days = usage?.days.orEmpty()
+        when (mode) {
+            "每周" -> days.chunked(7).mapIndexed { index, group ->
+                TokenDay("第${index + 1}周", group.sumOf { it.tokens }, group.sumOf { it.cost })
+            }.takeLast(16)
+            "累计总量" -> days.groupBy { it.date.take(7) }.map { (month, group) ->
+                TokenDay(month, group.sumOf { it.tokens }, group.sumOf { it.cost })
+            }.takeLast(12)
+            else -> days.takeLast(90)
+        }
+    }
+    val max = points.maxOfOrNull { it.tokens } ?: 0L
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Text("Token 活动", style = MaterialTheme.typography.titleMedium); Text("${usage?.totalTokens ?: 0} tokens · ¥${"%.4f".format(usage?.totalCost ?: 0.0)}", style = MaterialTheme.typography.labelSmall, color = Color.Gray) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("每天", "每周", "累计总量").forEach { label ->
+                    if (mode == label) Button(onClick = { mode = label }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                    else OutlinedButton(onClick = { mode = label }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+            if (usage == null) Text("连接电脑后显示用量", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            else LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
+                items(points) { point ->
+                    val strength = if (point.tokens == 0L || max == 0L) 0 else ((point.tokens.toDouble() / max * 3).toInt() + 1).coerceIn(1, 4)
+                    val color = listOf(Color(0xFFEBECE9), Color(0xFFCDE2D6), Color(0xFF8EBCA3), Color(0xFF4D8B6C), Color(0xFF1F6044))[strength]
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Box(Modifier.size(if (mode == "每天") 13.dp else 22.dp).background(color, RoundedCornerShape(3.dp)))
+                        if (mode != "每天") Text(point.date.takeLast(if (mode == "累计总量") 2 else 4), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
+                }
+            }
+            Text("颜色越深，用量越高；费用按电脑端配置的模型价格估算。", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        }
     }
 }
