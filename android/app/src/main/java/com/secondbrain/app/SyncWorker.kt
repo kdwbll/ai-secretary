@@ -10,18 +10,36 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
         val server = inputData.getString("server") ?: return Result.failure()
-        val message = inputData.getString("message") ?: return Result.success()
-        val escaped = message.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-        val body = "{\"message\":\"$escaped\"}".toRequestBody("application/json".toMediaType())
-        val response = OkHttpClient().newCall(Request.Builder().url("$server/api/chat").post(body).build()).execute()
-        return if (response.isSuccessful) Result.success() else Result.retry()
+        val kind = inputData.getString("kind") ?: "chat"
+        val message = escape(inputData.getString("message") ?: return Result.success())
+        val endpoint: String
+        val json: String
+        when (kind) {
+            "sms" -> { endpoint = "/api/ingest/sms"; json = "{\"text\":\"$message\",\"sender\":\"${escape(inputData.getString("sender") ?: "")}\"}" }
+            "notification" -> { endpoint = "/api/ingest/notification"; json = "{\"package\":\"${escape(inputData.getString("package") ?: "")}\",\"title\":\"${escape(inputData.getString("title") ?: "")}\",\"text\":\"$message\"}" }
+            else -> { endpoint = "/api/chat"; json = "{\"message\":\"$message\"}" }
+        }
+        val body = json.toRequestBody("application/json".toMediaType())
+        return try {
+            OkHttpClient().newCall(Request.Builder().url("$server$endpoint").post(body).build()).execute().use { response ->
+                if (response.isSuccessful) Result.success() else Result.retry()
+            }
+        } catch (_: Exception) {
+            Result.retry()
+        }
     }
 
     companion object {
-        fun enqueue(context: Context, server: String, message: String) {
+        private fun escape(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+
+        private fun enqueue(context: Context, data: Data) {
             // WorkManager is intentionally used so content survives temporary disconnection.
-            val request = OneTimeWorkRequestBuilder<SyncWorker>().setInputData(workDataOf("server" to server, "message" to message)).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+            val request = OneTimeWorkRequestBuilder<SyncWorker>().setInputData(data).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
             WorkManager.getInstance(context).enqueue(request)
         }
+
+        fun enqueueChat(context: Context, server: String, message: String) = enqueue(context, workDataOf("kind" to "chat", "server" to server, "message" to message))
+        fun enqueueSms(context: Context, server: String, sender: String, message: String) = enqueue(context, workDataOf("kind" to "sms", "server" to server, "sender" to sender, "message" to message))
+        fun enqueueNotification(context: Context, server: String, packageName: String, title: String, text: String) = enqueue(context, workDataOf("kind" to "notification", "server" to server, "package" to packageName, "title" to title, "message" to text))
     }
 }
