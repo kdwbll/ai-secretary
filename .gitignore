@@ -5,6 +5,8 @@ __pycache__/
 .DS_Store
 data/*.db
 data/*.db-*
+data/*.log
+data/*.pid
 config.json
 files/*
 !files/.gitkeep
