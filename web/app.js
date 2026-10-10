@@ -1,12 +1,15 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const titles = {today:'早上好。',chat:'一起想清楚。',memory:'你的长期记忆。',inbox:'收下，然后整理。',settings:'由你掌控。'};
+const titles = {chat:'一起想清楚。',memory:'你的长期记忆。',inbox:'收下，然后整理。',settings:'由你掌控。'};
 let currentFile = null, questions = [], questionIndex = 0;
+
+function greeting(now=new Date()){const hour=now.getHours();if(hour<5)return'夜深了。';if(hour<11)return'早上好。';if(hour<13)return'中午好。';if(hour<18)return'下午好。';return'晚上好。'}
+function updateClock(){const now=new Date();$('#eyebrow').textContent=new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit',hour12:false}).format(now);if($('#today').classList.contains('active'))$('#page-title').textContent=greeting(now)}
 
 function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2200)}
 async function api(path, options={}){const response=await fetch(path,{headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(options.headers||{})},...options});if(!response.ok)throw new Error((await response.json().catch(()=>({detail:'请求失败'}))).detail||'请求失败');return response.json()}
 
-$$('.nav').forEach(button=>button.onclick=()=>{const id=button.dataset.view;$$('.nav,.view').forEach(el=>el.classList.remove('active'));button.classList.add('active');$('#'+id).classList.add('active');$('#page-title').textContent=titles[id];$('.sidebar').classList.remove('open');if(id==='memory')loadFiles();if(id==='settings'){loadUsage();loadProviders();loadEmailAccounts()}if(id==='chat')loadProviders()});
+$$('.nav').forEach(button=>button.onclick=()=>{const id=button.dataset.view;$$('.nav,.view').forEach(el=>el.classList.remove('active'));button.classList.add('active');$('#'+id).classList.add('active');$('#page-title').textContent=id==='today'?greeting():titles[id];$('.sidebar').classList.remove('open');if(id==='memory')loadFiles();if(id==='settings'){loadUsage();loadProviders();loadEmailAccounts()}if(id==='chat')loadProviders()});
 $('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
 
 $('#chat-form').onsubmit=async event=>{event.preventDefault();const input=$('#chat-input'),text=input.value.trim(),send=$('.send');if(!text||send.disabled)return;appendMessage(text,'user');input.value='';send.disabled=true;const thinking=appendThinking();const selection=parseModelValue($('#chat-model').value);try{const result=await api('/api/chat',{method:'POST',body:JSON.stringify({message:text,...selection})});thinking.stop(result.answer);$('#sources').innerHTML=result.sources.map(s=>`<span>${escapeHtml(s)}</span>`).join('')}catch(error){thinking.stop('暂时无法处理：'+error.message)}finally{send.disabled=false;input.focus()}};
@@ -29,10 +32,12 @@ function renderUploadResult(card,result,name){card.classList.remove('processing'
 async function reanalyzeFile(hash,card,name){card.classList.add('processing');const button=card.querySelector('.reanalyze');if(button)button.disabled=true;try{const result=await api(`/api/files/${encodeURIComponent(hash)}/reanalyze`,{method:'POST'});renderUploadResult(card,result,name);toast('已使用当前模型重新分析')}catch(error){card.classList.remove('processing');if(button)button.disabled=false;toast('重新分析失败：'+error.message)}}
 
 $('#refresh-morning').onclick=async()=>{const result=await api('/api/reports/morning',{method:'POST'});$('#report-output').textContent=result.content;$('#report-output').classList.remove('hidden')};
-$('#start-interview').onclick=async()=>{questions=(await api('/api/interview')).questions;questionIndex=0;showQuestion();$('#interview-dialog').showModal()};
+$('#start-interview').onclick=async()=>{if($('#start-interview').dataset.mode==='edit'){document.querySelector('.nav[data-view="memory"]').click();await openFile('me.md');toast('可从左侧选择分类，直接修改已有档案');return}questions=(await api('/api/interview')).questions;questionIndex=0;showQuestion();$('#interview-dialog').showModal()};
 function showQuestion(){const item=questions[questionIndex];$('#interview-domain').textContent=`${questionIndex+1} / ${questions.length} · ${item.domain}`;$('#interview-question').textContent=item.question;$('#interview-answer').value='';$('.progress i').style.width=`${(questionIndex+1)/questions.length*100}%`}
-async function nextQuestion(save=true){const answer=$('#interview-answer').value.trim();if(save&&answer)await api('/api/chat',{method:'POST',body:JSON.stringify({message:answer})});questionIndex++;if(questionIndex>=questions.length){$('#interview-dialog').close();toast('采访完成，初版记忆已生成');return}showQuestion()}
+async function nextQuestion(save=true){const answer=$('#interview-answer').value.trim();if(save&&answer)await api('/api/chat',{method:'POST',body:JSON.stringify({message:answer})});questionIndex++;if(questionIndex>=questions.length){await api('/api/interview/complete',{method:'POST'});$('#interview-dialog').close();await loadProfileStatus();toast('采访完成，个人档案已生成');return}showQuestion()}
 $('#next-question').onclick=()=>nextQuestion(true);$('#skip-question').onclick=()=>nextQuestion(false);$('.dialog-close').onclick=()=>$('#interview-dialog').close();
+
+async function loadProfileStatus(){const status=await api('/api/profile/status');if(!status.completed)return;$('#focus-label').textContent='个人档案';$('#focus-title').textContent='你的个人档案已经建立。';$('#focus-copy').textContent='已有资料会继续参与对话和建议；需要调整时，可以直接进入记忆浏览器修改。';const button=$('#start-interview');button.dataset.mode='edit';button.innerHTML='修改个人档案 <span>→</span>'}
 
 const templates={OpenAI:'https://api.openai.com/v1',DeepSeek:'https://api.deepseek.com/v1','通义千问':'https://dashscope.aliyuncs.com/compatible-mode/v1',Kimi:'https://api.moonshot.cn/v1','智谱':'https://open.bigmodel.cn/api/paas/v4',Gemini:'https://generativelanguage.googleapis.com/v1beta/openai',Ollama:'http://localhost:11434/v1'};
 $('#provider-template').onchange=e=>{const name=e.target.value;$('#provider-name').value=name==='自定义'?'':name;$('#provider-url').value=templates[name]||''};
@@ -49,5 +54,6 @@ $('#sync-email').onclick=async()=>{const status=$('#email-status');status.textCo
 async function loadEmailAccounts(){const data=await api('/api/email/accounts');$('#email-status').textContent=data.accounts.length?data.accounts.map(a=>`${a.username} · ${a.last_sync?'上次同步 '+a.last_sync:'等待首次同步'}`).join('；'):'尚未连接'}
 async function loadUsage(){const data=await api('/api/usage');$('#tokens').textContent=Number(data.prompt_tokens)+Number(data.completion_tokens);$('#cost').textContent='¥'+Number(data.estimated_cost).toFixed(2)}
 function escapeHtml(value){return String(value).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-const now=new Date();$('#eyebrow').textContent=`${now.getFullYear()} · ${now.toLocaleDateString('zh-CN',{weekday:'long'})}`;
+updateClock();setInterval(updateClock,30000);
 loadProviders().catch(()=>{});
+loadProfileStatus().catch(()=>{});

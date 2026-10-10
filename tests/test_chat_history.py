@@ -44,3 +44,18 @@ class ChatHistoryTests(TestCase):
             result = service.chat("我每天运动")
             service.delete_chat(result["id"], delete_memory=False)
             self.assertIn(f"对话 #{result['id']}", service.memory.storage.read_text("habits.md"))
+
+    def test_existing_facts_mark_profile_as_completed(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            self.assertFalse(service.profile_status()["completed"])
+            service.chat("我每天运动")
+            service.chat("我的预算是每月三千元")
+            service.chat("我喜欢音乐")
+            self.assertTrue(service.profile_status()["completed"])
+
+    def test_interview_completion_is_persisted(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            self.assertTrue(service.complete_interview()["completed"])
+            self.assertTrue(service.profile_status()["completed"])

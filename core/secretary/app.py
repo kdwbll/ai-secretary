@@ -157,6 +157,16 @@ def interview():
     return {"questions": SERVICE.interview_questions()}
 
 
+@app.get("/api/profile/status")
+def profile_status():
+    return SERVICE.profile_status()
+
+
+@app.post("/api/interview/complete")
+def interview_complete():
+    return SERVICE.complete_interview()
+
+
 @app.get("/api/memory")
 def memory_list():
     return {"files": list(MEMORY.storage.list(".md"))}

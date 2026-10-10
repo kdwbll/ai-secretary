@@ -164,3 +164,17 @@ class SecretaryService:
             {"domain": "工作学习", "question": "你目前最重要的工作或学习目标是什么？"},
             {"domain": "兴趣与目标", "question": "你喜欢什么？未来一年最想完成哪件事？"},
         ]
+
+    def profile_status(self) -> dict[str, Any]:
+        fact_count = 0
+        for path in DOMAIN_HINTS:
+            try:
+                fact_count += len(re.findall(r"^- ", self.memory.storage.read_text(path), re.M))
+            except FileNotFoundError:
+                continue
+        completed = self.database.setting("interview_completed", "0") == "1" or fact_count >= 3
+        return {"completed": completed, "fact_count": fact_count}
+
+    def complete_interview(self) -> dict[str, Any]:
+        self.database.set_setting("interview_completed", "1")
+        return self.profile_status()
