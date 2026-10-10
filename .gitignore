@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+data/*.db
+data/*.db-*
+config.json
+files/*
+!files/.gitkeep
+inbox/*
+!inbox/.gitkeep
+memory/*
+!memory/.gitkeep
+android/.gradle/
+android/local.properties
+android/**/build/
