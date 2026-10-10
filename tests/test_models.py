@@ -54,6 +54,17 @@ class RouterTests(unittest.TestCase):
                 self.assertEqual(router.complete("smart", [], provider="two", model="chosen"), "ok")
                 self.assertEqual(call.call_args.args[1:3], ("two", "chosen"))
 
+    def test_empty_model_content_is_an_error(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("empty", "https://example.com/v1", "key", ["model"])
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":null}}]}'
+            with patch("urllib.request.urlopen", return_value=response):
+                with self.assertRaisesRegex(ValueError, "空内容"):
+                    router._openai_call("smart", "empty", "model", [], 0.2)
+
     def test_email_account_schema_does_not_expose_secret_in_listing_query(self):
         with TemporaryDirectory() as temp:
             database = Database(Path(temp) / "db.sqlite")

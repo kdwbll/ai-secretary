@@ -137,7 +137,12 @@ class ModelRouter:
             usage = result.get("usage", {})
             prompt_tokens = int(usage.get("prompt_tokens", 0))
             completion_tokens = int(usage.get("completion_tokens", 0))
-            return result["choices"][0]["message"]["content"]
+            content = result["choices"][0]["message"].get("content")
+            if isinstance(content, list):
+                content = "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("text"))
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("模型返回了空内容，请更换模型或降低消耗程度后重试")
+            return content.strip()
         except (urllib.error.URLError, KeyError, ValueError) as exc:
             status, error = "error", str(exc)
             raise

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .database import Database
+from .health import HealthService
 from .memory import MemoryEngine
 from .models import ModelRouter
 from .parsers import ParsedEvent, parse_notification, parse_sms
@@ -50,7 +51,22 @@ class SecretaryService:
             daily = f"daily/{(date.today() - timedelta(days=offset)).isoformat()}.md"
             if daily in set(self.memory.storage.list(".md")):
                 paths.append(daily)
-        return "\n\n".join(f"## {path}\n{self.memory.storage.read_text(path)}" for path in dict.fromkeys(paths))
+        context = "\n\n".join(f"## {path}\n{self.memory.storage.read_text(path)}" for path in dict.fromkeys(paths))
+        if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
+            context += "\n\n" + self._health_context()
+        return context
+
+    def _health_context(self) -> str:
+        summary = HealthService(self.database, self.memory).summary(14)
+        lines = ["## 本机健康数据（最近 14 天；仅用于个人趋势参考）", "日期：" + "、".join(summary["dates"])]
+        for item in summary["series"]:
+            if item["latest"] is None:
+                continue
+            values = ["—" if value is None else str(value) for value in item["values"]]
+            lines.append(f"- {item['label']}（{item['unit']}）：" + "、".join(values))
+        if summary["sample_count"] == 0:
+            lines.append("- 暂无已导入的健康样本")
+        return "\n".join(lines)
 
     def chat(self, message: str, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
         message = message.strip()
@@ -75,9 +91,15 @@ class SecretaryService:
             answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
         except RuntimeError:
             answer = self._local_answer(message, context, paths)
-        self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
-        self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
-        self.memory.rebuild_index()
+        if not isinstance(answer, str) or not answer.strip():
+            answer = self._local_answer(message, context, paths)
+        try:
+            self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
+            self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
+            self.memory.rebuild_index()
+        except Exception:
+            # A generated answer should still reach the UI even if a memory file is temporarily unavailable.
+            pass
         self._finish_chat(chat_id, answer, paths)
         return {"id": chat_id, "answer": answer, "sources": paths}
 
@@ -116,12 +138,34 @@ class SecretaryService:
         return {"subject": subject, "kind": event.kind}
 
     def _local_answer(self, message: str, context: str, paths: list[str]) -> str:
+        if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
+            return self._local_health_answer()
         facts = [line[2:] for line in context.splitlines() if line.startswith("- ")][:5]
         basis = "；".join(facts) if facts else "目前记忆信息还很少"
         return f"我已结合你的本地记忆分析。{basis}。针对“{message}”，建议先明确最迟完成时间与下一步动作，再把下一步安排到今天；如果你补充限制条件，我可以继续细化。"
 
+    def _local_health_answer(self) -> str:
+        summary = HealthService(self.database, self.memory).summary(14)
+        available = {item["metric"]: item for item in summary["series"] if item["latest"] is not None}
+        if not available:
+            return "目前还没有可分析的健康样本。请先在“健康”页面导入 Apple 健康或小米运动数据。"
+        lines = ["我已读取最近 14 天的本机健康数据。以下是趋势摘要（仅供个人记录，不替代医疗建议）："]
+        for metric in ("steps", "heart_rate", "sleep_hours", "weight", "active_energy", "distance"):
+            item = available.get(metric)
+            if not item:
+                continue
+            values = [value for value in item["values"] if value is not None]
+            average = sum(values) / len(values)
+            change = values[-1] - values[0] if len(values) > 1 else 0
+            direction = "上升" if change > 0 else "下降" if change < 0 else "持平"
+            lines.append(f"- {item['label']}：最近值 {item['latest']} {item['unit']}，期间平均 {average:.1f} {item['unit']}，较首日{direction} {abs(change):.1f}。")
+        lines.append("建议重点观察至少 2–4 周的连续趋势；若心率、睡眠或体重出现持续异常或伴随不适，请咨询医生。")
+        return "\n".join(lines)
+
     def _extract_local_fact(self, message: str, source: Optional[str] = None) -> None:
         if len(message) < 4 or message.endswith("?") or message.endswith("？"):
+            return
+        if re.match(r"^(?:请|帮我|给我|能否|可以|怎么|如何|为什么|分析|告诉我|看看|查看|总结)", message):
             return
         location_statement = re.search(r"(?:经常|常常|常去|喜欢)?去([^，。！？!?]{2,18}?)(?:玩|逛|吃饭|散步|运动|购物)(?:[，。！？!?]|$)", message)
         if location_statement:

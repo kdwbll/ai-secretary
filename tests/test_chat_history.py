@@ -71,3 +71,9 @@ class ChatHistoryTests(TestCase):
             self.assertIn("我经常去春熙路玩", interests)
             self.assertIn(f"对话 #{result['id']}", interests)
             self.assertNotIn("我经常去春熙路玩", habits)
+
+    def test_health_question_is_not_saved_as_a_health_fact(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.chat("分析一下我的健康数据")
+            self.assertNotIn("分析一下我的健康数据", service.memory.storage.read_text("health.md"))
