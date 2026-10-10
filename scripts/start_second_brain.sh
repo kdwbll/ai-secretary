@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -u
 
-project_dir="/Users/Apple/Documents/ChatGPT/ai-secretary"
+script_dir="${0:A:h}"
+project_dir="${script_dir:h}"
 python_bin="$project_dir/.venv/bin/python"
 port="${SECOND_BRAIN_PORT:-8765}"
 url="http://127.0.0.1:$port"
