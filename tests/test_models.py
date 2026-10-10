@@ -8,6 +8,37 @@ from core.secretary.models import ModelRouter, Route
 
 
 class RouterTests(unittest.TestCase):
+    def test_model_price_recalculates_existing_calls_in_cny(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("priced", "https://example.com/v1", "key", ["model"])
+            with database.connect() as db:
+                db.execute(
+                    "INSERT INTO ai_calls(created_at,task,provider,model,prompt_tokens,completion_tokens,status) VALUES(datetime('now'),'smart','priced','model',1000000,500000,'ok')"
+                )
+            router.save_price("priced", "model", 2.0, 6.0, "CNY")
+            cost = database.rows("SELECT estimated_cost FROM ai_calls")[0]["estimated_cost"]
+            self.assertAlmostEqual(cost, 5.0)
+
+    def test_usd_price_uses_configured_exchange_rate(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("usd", "https://example.com/v1", "key", ["model"])
+            router.set_usd_cny_rate(7.0)
+            router.save_price("usd", "model", 1.0, 2.0, "USD")
+            self.assertAlmostEqual(router._cost_cny("usd", "model", 1_000_000, 1_000_000), 21.0)
+
+    def test_known_models_receive_editable_default_prices(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("DeepSeek", "https://api.deepseek.com/v1", "key", ["deepseek-flash"])
+            provider = router.providers()[0]
+            self.assertEqual(provider["prices"]["deepseek-flash"]["currency"], "USD")
+            self.assertEqual(provider["prices"]["deepseek-flash"]["output_per_million"], 1.2)
+
     def test_provider_and_route_round_trip(self):
         with TemporaryDirectory() as temp:
             router = ModelRouter(Database(Path(temp) / "db.sqlite"))

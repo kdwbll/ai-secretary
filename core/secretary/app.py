@@ -66,6 +66,18 @@ class RouteInput(BaseModel):
     fallback_model: Optional[str] = None
 
 
+class ModelPriceInput(BaseModel):
+    provider: str
+    model: str
+    input_per_million: float
+    output_per_million: float
+    currency: str = "CNY"
+
+
+class CostSettingsInput(BaseModel):
+    usd_cny_rate: float
+
+
 class SmsInput(BaseModel):
     text: str
     sender: str = ""
@@ -227,6 +239,29 @@ def provider_delete(provider_id: int):
     return {"ok": True, "name": name}
 
 
+@app.post("/api/model-prices")
+def model_price_save(body: ModelPriceInput):
+    try:
+        MODELS.save_price(body.provider, body.model, body.input_per_million, body.output_per_million, body.currency)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True}
+
+
+@app.get("/api/cost-settings")
+def cost_settings():
+    return {"usd_cny_rate": float(DB.setting("usd_cny_rate", "7.20") or 7.20)}
+
+
+@app.post("/api/cost-settings")
+def cost_settings_save(body: CostSettingsInput):
+    try:
+        MODELS.set_usd_cny_rate(body.usd_cny_rate)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True}
+
+
 @app.get("/api/email/accounts")
 def email_accounts():
     return {"accounts": DB.rows("SELECT id,name,host,port,username,enabled,last_sync FROM email_accounts ORDER BY id")}
@@ -263,8 +298,10 @@ def route_save(body: RouteInput):
 
 @app.get("/api/usage")
 def usage():
+    MODELS.seed_known_prices()
     rows = DB.rows("SELECT COALESCE(SUM(prompt_tokens),0) prompt_tokens,COALESCE(SUM(completion_tokens),0) completion_tokens,COALESCE(SUM(estimated_cost),0) estimated_cost FROM ai_calls WHERE created_at >= date('now','start of month')")
-    return rows[0]
+    breakdown = DB.rows("SELECT provider,model,SUM(prompt_tokens) prompt_tokens,SUM(completion_tokens) completion_tokens,SUM(estimated_cost) estimated_cost FROM ai_calls WHERE created_at >= date('now','start of month') GROUP BY provider,model HAVING SUM(prompt_tokens)+SUM(completion_tokens)>0 ORDER BY estimated_cost DESC")
+    return {**rows[0], "breakdown": breakdown}
 
 
 @app.post("/api/ingest/sms")

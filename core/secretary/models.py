@@ -29,10 +29,79 @@ class ModelRouter:
         self.database = database
 
     def providers(self) -> list[dict]:
+        self.seed_known_prices()
         rows = self.database.rows("SELECT id,name,base_url,models,kind,consumption_level FROM providers ORDER BY name")
+        prices = {(row["provider"], row["model"]): row for row in self.database.rows("SELECT provider,model,input_per_million,output_per_million,currency,updated_at FROM model_prices")}
         for row in rows:
             row["models"] = json.loads(row["models"])
+            row["prices"] = {model: prices.get((row["name"], model)) for model in row["models"]}
         return rows
+
+    def seed_known_prices(self) -> None:
+        providers = self.database.rows("SELECT name,base_url,models FROM providers")
+        defaults = []
+        for provider in providers:
+            for model in json.loads(provider["models"]):
+                normalized = model.lower().replace("_", "-")
+                if normalized == "deepseek-flash" and "deepseek.com" in provider["base_url"]:
+                    defaults.append((provider["name"], model, 0.30, 1.20, "USD"))
+                elif normalized.startswith("doubao-seed-2-1-lite"):
+                    defaults.append((provider["name"], model, 1.60, 5.40, "CNY"))
+        if not defaults:
+            return
+        with self.database.connect() as db:
+            for provider, model, input_price, output_price, currency in defaults:
+                db.execute(
+                    "INSERT OR IGNORE INTO model_prices(provider,model,input_per_million,output_per_million,currency,updated_at) VALUES(?,?,?,?,?,datetime('now','localtime'))",
+                    (provider, model, input_price, output_price, currency),
+                )
+        self.recalculate_costs()
+
+    def save_price(self, provider: str, model: str, input_per_million: float, output_per_million: float, currency: str) -> None:
+        currency = currency.upper()
+        if input_per_million < 0 or output_per_million < 0:
+            raise ValueError("模型单价不能小于 0")
+        if currency not in {"CNY", "USD"}:
+            raise ValueError("币种只支持 CNY 或 USD")
+        if not self.database.rows("SELECT 1 FROM providers WHERE name=?", (provider,)):
+            raise ValueError("供应商不存在")
+        with self.database.connect() as db:
+            db.execute(
+                "INSERT INTO model_prices(provider,model,input_per_million,output_per_million,currency,updated_at) VALUES(?,?,?,?,?,datetime('now','localtime')) "
+                "ON CONFLICT(provider,model) DO UPDATE SET input_per_million=excluded.input_per_million,output_per_million=excluded.output_per_million,currency=excluded.currency,updated_at=excluded.updated_at",
+                (provider, model, input_per_million, output_per_million, currency),
+            )
+        self.recalculate_costs(provider, model)
+
+    def set_usd_cny_rate(self, rate: float) -> None:
+        if not 1 <= rate <= 20:
+            raise ValueError("美元兑人民币汇率应在 1 到 20 之间")
+        self.database.set_setting("usd_cny_rate", str(rate))
+        self.recalculate_costs()
+
+    def _cost_cny(self, provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
+        prices = self.database.rows("SELECT * FROM model_prices WHERE provider=? AND model=?", (provider, model))
+        if not prices:
+            return 0.0
+        price = prices[0]
+        native = (prompt_tokens * float(price["input_per_million"]) + completion_tokens * float(price["output_per_million"])) / 1_000_000
+        rate = float(self.database.setting("usd_cny_rate", "7.20") or 7.20) if price["currency"] == "USD" else 1.0
+        return native * rate
+
+    def recalculate_costs(self, provider: Optional[str] = None, model: Optional[str] = None) -> None:
+        clauses, params = [], []
+        if provider is not None:
+            clauses.append("provider=?")
+            params.append(provider)
+        if model is not None:
+            clauses.append("model=?")
+            params.append(model)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self.database.rows("SELECT id,provider,model,prompt_tokens,completion_tokens FROM ai_calls" + where, tuple(params))
+        with self.database.connect() as db:
+            for row in rows:
+                cost = self._cost_cny(row["provider"], row["model"], row["prompt_tokens"], row["completion_tokens"])
+                db.execute("UPDATE ai_calls SET estimated_cost=? WHERE id=?", (cost, row["id"]))
 
     def save_provider(self, name: str, base_url: str, api_key: str, models: list[str], kind: str = "openai", consumption_level: str = "medium") -> None:
         if consumption_level not in {"low", "medium", "high"}:
@@ -162,6 +231,7 @@ class ModelRouter:
             status, error = "error", str(exc)
             raise
         finally:
+            cost = self._cost_cny(provider_name, model, prompt_tokens, completion_tokens)
             with self.database.connect() as db:
                 db.execute(
                     "INSERT INTO ai_calls(created_at,task,provider,model,prompt_tokens,completion_tokens,estimated_cost,status,error) VALUES(?,?,?,?,?,?,?,?,?)",

@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS ai_calls (
   model TEXT, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
   estimated_cost REAL DEFAULT 0, status TEXT NOT NULL, error TEXT
 );
+CREATE TABLE IF NOT EXISTS model_prices (
+  provider TEXT NOT NULL, model TEXT NOT NULL,
+  input_per_million REAL NOT NULL DEFAULT 0,
+  output_per_million REAL NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'CNY', updated_at TEXT NOT NULL,
+  PRIMARY KEY(provider, model)
+);
 CREATE TABLE IF NOT EXISTS mutations (
   id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, path TEXT NOT NULL,
   before_text TEXT NOT NULL, after_text TEXT NOT NULL, reason TEXT NOT NULL, actor TEXT NOT NULL
@@ -71,7 +78,7 @@ class Database:
             provider_columns = {row[1] for row in db.execute("PRAGMA table_info(providers)")}
             if "consumption_level" not in provider_columns:
                 db.execute("ALTER TABLE providers ADD COLUMN consumption_level TEXT NOT NULL DEFAULT 'medium'")
-            defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5"}
+            defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5", "usd_cny_rate": "7.20"}
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))
 
