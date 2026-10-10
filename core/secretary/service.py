@@ -54,7 +54,29 @@ class SecretaryService:
         context = "\n\n".join(f"## {path}\n{self.memory.storage.read_text(path)}" for path in dict.fromkeys(paths))
         if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
             context += "\n\n" + self._health_context()
+        file_context = self._file_context(message)
+        if file_context:
+            context += "\n\n" + file_context
         return context
+
+    def _file_context(self, message: str) -> str:
+        aliases = {"综测": ("综合素质", "评价办法"), "体检": ("体检", "检查报告"), "简历": ("简历", "履历")}
+        terms = {message[index:index + 2] for index in range(max(0, len(message) - 1)) if not re.search(r"[\s，。！？!?]", message[index:index + 2])}
+        for key, values in aliases.items():
+            if key in message:
+                terms.update(values)
+        candidates = []
+        for row in self.database.rows("SELECT original_name,extracted_text FROM files WHERE extracted_text<>'' ORDER BY created_at DESC LIMIT 50"):
+            haystack = row["original_name"] + "\n" + row["extracted_text"]
+            score = sum(1 for term in terms if term in haystack)
+            if score:
+                candidates.append((score, row))
+        if not candidates:
+            return ""
+        sections = []
+        for _, row in sorted(candidates, key=lambda item: item[0], reverse=True)[:2]:
+            sections.append(f"### 已上传文件：{row['original_name']}\n{row['extracted_text'][:12000]}")
+        return "## 与问题相关的已上传文件正文\n" + "\n\n".join(sections)
 
     def _health_context(self) -> str:
         summary = HealthService(self.database, self.memory).summary(14)

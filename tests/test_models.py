@@ -65,6 +65,19 @@ class RouterTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "空内容"):
                     router._openai_call("smart", "empty", "model", [], 0.2)
 
+    def test_length_finish_reason_continues_for_medium_provider(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("medium", "https://example.com/v1", "key", ["model"], consumption_level="medium")
+            first = unittest.mock.MagicMock()
+            first.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"first"},"finish_reason":"length"}],"usage":{"completion_tokens":4096}}'
+            second = unittest.mock.MagicMock()
+            second.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"second"},"finish_reason":"stop"}],"usage":{"completion_tokens":20}}'
+            with patch("urllib.request.urlopen", side_effect=[first, second]):
+                answer = router._openai_call("smart", "medium", "model", [{"role": "user", "content": "question"}], 0.2)
+            self.assertEqual(answer, "first\n\nsecond")
+
     def test_email_account_schema_does_not_expose_secret_in_listing_query(self):
         with TemporaryDirectory() as temp:
             database = Database(Path(temp) / "db.sqlite")

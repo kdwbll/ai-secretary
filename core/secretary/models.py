@@ -118,31 +118,46 @@ class ModelRouter:
             provider = db.execute("SELECT * FROM providers WHERE name=?", (provider_name,)).fetchone()
         if not provider:
             raise RuntimeError(f"供应商不存在：{provider_name}")
-        token_budgets = {"low": 512, "medium": 1024, "high": 2048}
-        payload = json.dumps({
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": token_budgets.get(provider["consumption_level"], 1024),
-        }).encode()
-        request = urllib.request.Request(
-            provider["base_url"].rstrip("/") + "/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {provider['api_key']}"},
-        )
+        level = provider["consumption_level"]
+        token_budgets = {"low": 2048, "medium": 4096, "high": 8192}
+        segment_limits = {"low": 1, "medium": 2, "high": 3}
+        max_tokens = token_budgets.get(level, 4096)
         status, error, prompt_tokens, completion_tokens, cost = "ok", None, 0, 0, 0.0
         try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                result = json.loads(response.read())
-            usage = result.get("usage", {})
-            prompt_tokens = int(usage.get("prompt_tokens", 0))
-            completion_tokens = int(usage.get("completion_tokens", 0))
-            content = result["choices"][0]["message"].get("content")
-            if isinstance(content, list):
-                content = "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("text"))
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("模型返回了空内容，请更换模型或降低消耗程度后重试")
-            return content.strip()
+            conversation = list(messages)
+            parts = []
+            truncated = False
+            for _ in range(segment_limits.get(level, 2)):
+                payload = json.dumps({"model": model, "messages": conversation, "temperature": temperature, "max_tokens": max_tokens}).encode()
+                request = urllib.request.Request(
+                    provider["base_url"].rstrip("/") + "/chat/completions",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {provider['api_key']}"},
+                )
+                with urllib.request.urlopen(request, timeout=90) as response:
+                    result = json.loads(response.read())
+                usage = result.get("usage", {})
+                prompt_tokens += int(usage.get("prompt_tokens", 0))
+                completion_tokens += int(usage.get("completion_tokens", 0))
+                choice = result["choices"][0]
+                content = choice["message"].get("content")
+                if isinstance(content, list):
+                    content = "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("text"))
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("模型返回了空内容，请更换模型或调整消耗程度后重试")
+                parts.append(content.strip())
+                truncated = choice.get("finish_reason") == "length"
+                if not truncated:
+                    break
+                conversation = list(messages) + [
+                    {"role": "assistant", "content": "\n\n".join(parts)},
+                    {"role": "user", "content": "上一段回答因长度限制被截断。请从断点处直接继续，不要重复已经写过的内容，并完整收尾。"},
+                ]
+            answer = "\n\n".join(parts)
+            if truncated:
+                level_label = {"low": "小", "medium": "中", "high": "大"}.get(level, "中")
+                answer += f"\n\n（回答达到“{level_label}消耗”上限；如需更详细内容，可提高该供应商的消耗程度后继续提问。）"
+            return answer
         except (urllib.error.URLError, KeyError, ValueError) as exc:
             status, error = "error", str(exc)
             raise

@@ -77,3 +77,15 @@ class ChatHistoryTests(TestCase):
             service = self.make_service(Path(directory))
             service.chat("分析一下我的健康数据")
             self.assertNotIn("分析一下我的健康数据", service.memory.storage.read_text("health.md"))
+
+    def test_relevant_uploaded_document_is_added_to_context(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            with service.database.connect() as db:
+                db.execute(
+                    "INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)",
+                    ("hash", "本科生综合素质评价办法.doc", "files/test.doc", "2026-10-10T12:00:00", "发展性评价包含创新创造与志愿服务"),
+                )
+            context = service._context("我最近要算综测")
+            self.assertIn("本科生综合素质评价办法.doc", context)
+            self.assertIn("发展性评价包含创新创造与志愿服务", context)
