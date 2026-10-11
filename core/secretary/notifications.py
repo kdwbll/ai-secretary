@@ -12,11 +12,12 @@ class NotificationService:
         self.database = database
 
     def publish(self, kind: str, title: str, body: str) -> int:
-        message = " ".join(body.replace("#", "").split())[:300]
+        full_body = body.strip()[:20_000]
+        message = " ".join(full_body.replace("#", "").split())[:300]
         with self.database.connect() as db:
             cursor = db.execute(
                 "INSERT INTO notifications(created_at,kind,title,body) VALUES(?,?,?,?)",
-                (datetime.now().astimezone().isoformat(timespec="seconds"), kind, title[:80], message),
+                (datetime.now().astimezone().isoformat(timespec="seconds"), kind, title[:80], full_body),
             )
             notification_id = int(cursor.lastrowid)
         if self.database.setting("notifications_enabled", "0") == "1" and platform.system() == "Darwin":

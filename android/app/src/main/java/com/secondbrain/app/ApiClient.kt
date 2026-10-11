@@ -35,7 +35,7 @@ data class UploadReceipt(val name: String, val summary: String)
 data class RemoteFile(val hash: String, val name: String, val createdAt: String, val summary: String)
 data class TokenDay(val date: String, val tokens: Long, val cost: Double)
 data class TokenActivity(val totalTokens: Long, val totalCost: Double, val days: List<TokenDay>)
-data class RemoteNotification(val id: Long, val title: String, val body: String)
+data class RemoteNotification(val id: Long, val kind: String, val title: String, val body: String)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -126,7 +126,7 @@ object ApiClient {
             buildList {
                 for (index in 0 until array.length()) {
                     val item = array.getJSONObject(index)
-                    add(RemoteNotification(item.getLong("id"), item.optString("title"), item.optString("body")))
+                    add(RemoteNotification(item.getLong("id"), item.optString("kind"), item.optString("title"), item.optString("body")))
                 }
             }
         }
