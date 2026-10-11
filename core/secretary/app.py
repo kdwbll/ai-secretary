@@ -30,7 +30,7 @@ from .secrets import SecretStore
 from .web_search import WebSearchService
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.7.5"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
@@ -136,7 +136,7 @@ class LocationReportInput(BaseModel):
 
 class WebSearchSettingsInput(BaseModel):
     enabled: bool = False
-    provider: str = "brave"
+    provider: str = "bocha"
     api_key: str = ""
     searxng_url: str = ""
 
@@ -567,16 +567,16 @@ def notification_settings_save(body: NotificationSettingsInput):
 def web_search_settings():
     return {
         "enabled": DB.setting("web_search_enabled", "0") == "1",
-        "provider": DB.setting("web_search_provider", "brave") or "brave",
-        "has_api_key": bool(DB.setting("web_search_api_key", "")),
+        "provider": DB.setting("web_search_provider", "bocha") or "bocha",
+        "has_api_key": bool(DB.setting("bocha_search_api_key", "")),
         "searxng_url": DB.setting("searxng_url", "") or "",
     }
 
 
 @app.post("/api/web-search/settings")
 def web_search_settings_save(body: WebSearchSettingsInput):
-    if body.provider not in {"brave", "searxng"}:
-        raise HTTPException(400, "联网搜索供应商必须是 Brave Search 或 SearXNG")
+    if body.provider not in {"bocha", "searxng"}:
+        raise HTTPException(400, "联网搜索供应商必须是博查搜索或 SearXNG")
     if body.provider == "searxng" and body.searxng_url:
         from urllib.parse import urlparse
         parsed = urlparse(body.searxng_url)
@@ -586,7 +586,7 @@ def web_search_settings_save(body: WebSearchSettingsInput):
     DB.set_setting("web_search_provider", body.provider)
     DB.set_setting("searxng_url", body.searxng_url.strip())
     if body.api_key:
-        DB.set_setting("web_search_api_key", SECRETS.encrypt(body.api_key))
+        DB.set_setting("bocha_search_api_key", SECRETS.encrypt(body.api_key))
     return {"ok": True}
 
 

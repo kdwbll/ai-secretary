@@ -26,26 +26,49 @@ class _Response:
 
 
 class WebSearchTests(TestCase):
-    def test_brave_results_are_normalized_and_key_stays_in_header(self):
+    def test_bocha_results_are_normalized_and_key_stays_in_header(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = Database(root / "data.db")
             secrets = SecretStore(root / ".key")
             database.set_setting("web_search_enabled", "1")
-            database.set_setting("web_search_provider", "brave")
-            database.set_setting("web_search_api_key", secrets.encrypt("secret-search-key"))
+            database.set_setting("web_search_provider", "bocha")
+            database.set_setting("bocha_search_api_key", secrets.encrypt("secret-search-key"))
             service = WebSearchService(database, secrets)
-            payload = {"web": {"results": [{
-                "title": "<b>示例商品</b>", "url": "https://example.com/item",
-                "description": "<p>当前参考价格 99 元</p>",
+            payload = {"webPages": {"value": [{
+                "name": "<b>示例商品</b>", "url": "https://example.com/item",
+                "summary": "<p>当前参考价格 99 元</p>", "siteName": "示例网站",
+                "datePublished": "2026-10-12T10:00:00+08:00",
             }]}}
             with patch("core.secretary.web_search.urlopen", return_value=_Response(payload)) as mocked:
                 outcome = service.search("示例商品多少钱")
             self.assertEqual(outcome.results[0]["title"], "示例商品")
             self.assertEqual(outcome.results[0]["snippet"], "当前参考价格 99 元")
+            self.assertEqual(outcome.results[0]["site"], "示例网站")
+            self.assertEqual(outcome.provider, "bocha")
             request = mocked.call_args.args[0]
             self.assertNotIn("secret-search-key", request.full_url)
-            self.assertEqual(request.get_header("X-subscription-token"), "secret-search-key")
+            self.assertEqual(request.get_header("Authorization"), "Bearer secret-search-key")
+            self.assertEqual(request.get_method(), "POST")
+            body = json.loads(request.data.decode("utf-8"))
+            self.assertEqual(body["query"], "示例商品多少钱")
+            self.assertTrue(body["summary"])
+
+    def test_news_search_uses_recent_bocha_results_and_wrapped_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root / "data.db")
+            secrets = SecretStore(root / ".key")
+            database.set_setting("web_search_enabled", "1")
+            database.set_setting("web_search_provider", "bocha")
+            database.set_setting("bocha_search_api_key", secrets.encrypt("key"))
+            payload = {"data": {"webPages": {"value": [{
+                "name": "今日新闻", "url": "https://example.cn/news", "snippet": "新闻摘要",
+            }]}}}
+            with patch("core.secretary.web_search.urlopen", return_value=_Response(payload)) as mocked:
+                outcome = WebSearchService(database, secrets).search("今日新闻", category="news")
+            self.assertEqual(outcome.results[0]["title"], "今日新闻")
+            self.assertEqual(json.loads(mocked.call_args.args[0].data.decode("utf-8"))["freshness"], "oneWeek")
 
     def test_search_is_only_triggered_for_web_dependent_questions(self):
         self.assertFalse(SecretaryService._web_search_candidate("我今天心情不错"))
