@@ -16,12 +16,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,13 +40,21 @@ import java.nio.charset.StandardCharsets
 
 class MainActivity : ComponentActivity() {
     private val requestPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    private var currentIntent by mutableStateOf<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        currentIntent = intent
         val permissions = mutableListOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS)
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
         requestPermissions.launch(permissions.toTypedArray())
-        setContent { SecondBrainApp(intent) }
+        setContent { SecondBrainApp(currentIntent) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        currentIntent = intent
     }
 }
 
@@ -71,6 +81,7 @@ fun SecondBrainApp(intent: Intent?) {
     var sending by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    var openedNotification by remember { mutableStateOf<RemoteNotification?>(null) }
     val scope = rememberCoroutineScope()
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.values.any { it }) scope.launch {
@@ -112,6 +123,18 @@ fun SecondBrainApp(intent: Intent?) {
         }
     }
 
+    LaunchedEffect(intent) {
+        val notificationId = intent?.getLongExtra(AndroidNotifications.EXTRA_NOTIFICATION_ID, -1L) ?: -1L
+        if (notificationId >= 0) {
+            openedNotification = RemoteNotification(
+                notificationId,
+                intent?.getStringExtra(AndroidNotifications.EXTRA_NOTIFICATION_KIND).orEmpty(),
+                intent?.getStringExtra(AndroidNotifications.EXTRA_NOTIFICATION_TITLE).orEmpty().ifBlank { "第二大脑提醒" },
+                intent?.getStringExtra(AndroidNotifications.EXTRA_NOTIFICATION_BODY).orEmpty(),
+            )
+        }
+    }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) scope.launch {
             uploading = true
@@ -146,6 +169,31 @@ fun SecondBrainApp(intent: Intent?) {
                 }
             }) { Text("确认删除", color = Color(0xFFA04339)) } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+        )
+    }
+
+
+    openedNotification?.let { item ->
+        AlertDialog(
+            onDismissRequest = { openedNotification = null },
+            title = { Text(item.title) },
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        when (item.kind) {
+                            "morning" -> "今日早报"
+                            "evening" -> "晚间复盘"
+                            "weekly" -> "每周整理"
+                            else -> "第二大脑通知"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Forest,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    MarkdownText(item.body.ifBlank { "这条通知没有正文。" })
+                }
+            },
+            confirmButton = { TextButton(onClick = { openedNotification = null }) { Text("知道了") } },
         )
     }
 
