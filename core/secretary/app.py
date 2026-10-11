@@ -27,9 +27,10 @@ from .notifications import NotificationService
 from .service import SecretaryService
 from .storage import LocalStorage
 from .secrets import SecretStore
+from .web_search import WebSearchService
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.7.4"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
@@ -37,7 +38,8 @@ SECRETS.migrate_database(DB)
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB, SECRETS)
 NOTIFICATIONS = NotificationService(DB)
-SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish, SECRETS)
+WEB_SEARCH = WebSearchService(DB, SECRETS)
+SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish, SECRETS, WEB_SEARCH)
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
@@ -130,6 +132,13 @@ class LocationReportInput(BaseModel):
     longitude: float
     label: str = Field(default="", max_length=120)
     enabled: bool = True
+
+
+class WebSearchSettingsInput(BaseModel):
+    enabled: bool = False
+    provider: str = "brave"
+    api_key: str = ""
+    searxng_url: str = ""
 
 
 class NotificationSettingsInput(BaseModel):
@@ -551,6 +560,33 @@ def notification_settings():
 @app.post("/api/notification-settings")
 def notification_settings_save(body: NotificationSettingsInput):
     DB.set_setting("notifications_enabled", "1" if body.enabled else "0")
+    return {"ok": True}
+
+
+@app.get("/api/web-search/settings")
+def web_search_settings():
+    return {
+        "enabled": DB.setting("web_search_enabled", "0") == "1",
+        "provider": DB.setting("web_search_provider", "brave") or "brave",
+        "has_api_key": bool(DB.setting("web_search_api_key", "")),
+        "searxng_url": DB.setting("searxng_url", "") or "",
+    }
+
+
+@app.post("/api/web-search/settings")
+def web_search_settings_save(body: WebSearchSettingsInput):
+    if body.provider not in {"brave", "searxng"}:
+        raise HTTPException(400, "联网搜索供应商必须是 Brave Search 或 SearXNG")
+    if body.provider == "searxng" and body.searxng_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(body.searxng_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(400, "SearXNG 地址必须是完整的 HTTP 或 HTTPS 地址")
+    DB.set_setting("web_search_enabled", "1" if body.enabled else "0")
+    DB.set_setting("web_search_provider", body.provider)
+    DB.set_setting("searxng_url", body.searxng_url.strip())
+    if body.api_key:
+        DB.set_setting("web_search_api_key", SECRETS.encrypt(body.api_key))
     return {"ok": True}
 
 
