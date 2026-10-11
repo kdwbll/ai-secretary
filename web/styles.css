@@ -28,6 +28,11 @@
 .map-card{margin-top:11px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--white)}
 .map-card .map-canvas{height:260px;width:100%;display:grid;place-items:center}
 .map-card>small{display:block;padding:8px 11px;color:var(--muted)}
+
+/* 0.7.2: readable composer and centered desktop activity grid. */
+#chat-input{font-size:15px;line-height:1.55;min-height:42px;max-height:132px;overflow-x:hidden;overflow-y:hidden}
+.daily-grid{width:max-content;margin-inline:auto}
+.period-grid{justify-content:center}
 .coordinate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .toggle-label{display:flex!important;align-items:center;gap:8px}.toggle-label input{width:auto!important}
 .history-search{margin:10px 44px 14px 0}.history-search input{min-width:250px}

@@ -6,6 +6,11 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Html
+import android.text.method.LinkMovementMethod
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,6 +20,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,9 +28,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 class MainActivity : ComponentActivity() {
     private val requestPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
@@ -56,6 +66,7 @@ fun SecondBrainApp(intent: Intent?) {
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
     var usage by remember { mutableStateOf<TokenActivity?>(null) }
+    var mapConfig by remember { mutableStateOf<MapConfig?>(null) }
     var notice by remember { mutableStateOf("正在检查电脑连接…") }
     var sending by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
@@ -76,7 +87,12 @@ fun SecondBrainApp(intent: Intent?) {
         connected = ApiClient.health(server, token)
         if (connected == true) {
             notice = "已安全联通电脑 · 数据自动同步"
-            runCatching { chats = ApiClient.chats(server, token) }
+            runCatching { ApiClient.chats(server, token) }.onSuccess { updated ->
+                chats = updated
+                if (mapConfig == null && updated.any { it.maps.isNotEmpty() }) {
+                    runCatching { ApiClient.mapConfig(server, token) }.onSuccess { mapConfig = it }
+                }
+            }
             runCatching { events = ApiClient.events(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
@@ -155,15 +171,16 @@ fun SecondBrainApp(intent: Intent?) {
             Column(Modifier.fillMaxSize().padding(padding).background(Paper)) {
                 Text(notice, Modifier.fillMaxWidth().background(if (connected == true) Color(0xFFE6EEE8) else Color(0xFFF2E7E2)).padding(horizontal = 16.dp, vertical = 9.dp), style = MaterialTheme.typography.bodySmall)
                 when (selectedTab) {
-                    0 -> ConversationScreen(chats, draft, { draft = it }, sending, uploading, onSend = {
+                    0 -> ConversationScreen(chats, mapConfig, draft, { draft = it }, sending, uploading, onSend = {
                         val message = draft.trim()
                         if (message.isNotEmpty()) {
+                            draft = ""
                             sending = true
                             notice = "正在发送并等待回复…"
                             scope.launch {
                                 runCatching { ApiClient.sendChat(server, token, message) }
-                                    .onSuccess { draft = ""; notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server, token) }
-                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); draft = ""; notice = "电脑暂时不可达，消息已进入离线队列" }
+                                    .onSuccess { notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server, token) }
+                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); notice = "电脑暂时不可达，消息已进入离线队列" }
                                 sending = false
                             }
                         }
@@ -199,13 +216,17 @@ fun SecondBrainApp(intent: Intent?) {
 }
 
 @Composable
-private fun ConversationScreen(chats: List<ChatExchange>, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
+private fun ConversationScreen(chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(chats.size, chats.lastOrNull()?.assistant) {
+        if (chats.isNotEmpty()) listState.scrollToItem(chats.lastIndex)
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp)) {
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
             if (chats.isEmpty()) item { Text("这里会实时显示手机和电脑两端的会话。", color = Color.Gray, modifier = Modifier.padding(12.dp)) }
             items(chats, key = { it.id }) { chat ->
-                MessageBubble(chat.user, true)
-                MessageBubble(chat.assistant.ifBlank { "正在处理…" }, false)
+                MessageBubble(chat.user, true, emptyList(), mapConfig)
+                MessageBubble(chat.assistant.ifBlank { "正在处理…" }, false, chat.maps, mapConfig)
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -217,12 +238,130 @@ private fun ConversationScreen(chats: List<ChatExchange>, draft: String, onDraft
 }
 
 @Composable
-private fun MessageBubble(text: String, fromUser: Boolean) {
+private fun MessageBubble(text: String, fromUser: Boolean, maps: List<MapSpec>, mapConfig: MapConfig?) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
         Surface(color = if (fromUser) Forest else Color(0xFFFFFDF8), shape = RoundedCornerShape(15.dp), tonalElevation = if (fromUser) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 310.dp)) {
-            Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = if (fromUser) Color.White else Color(0xFF26332D), style = MaterialTheme.typography.bodyMedium)
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (fromUser) Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                else MarkdownText(text)
+                maps.forEach { spec -> AmapCard(spec, mapConfig) }
+            }
         }
     }
+}
+
+@Composable
+private fun MarkdownText(markdown: String) {
+    val html = remember(markdown) { markdownToHtml(markdown) }
+    AndroidView(
+        modifier = Modifier.fillMaxWidth(),
+        factory = { context ->
+            TextView(context).apply {
+                setTextColor(android.graphics.Color.rgb(38, 51, 45))
+                textSize = 15f
+                includeFontPadding = false
+                linksClickable = true
+                movementMethod = LinkMovementMethod.getInstance()
+            }
+        },
+        update = { view -> view.text = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT) },
+    )
+}
+
+@Composable
+private fun AmapCard(spec: MapSpec, config: MapConfig?) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F1E8)), modifier = Modifier.fillMaxWidth()) {
+        Column {
+            if (config?.apiKey.isNullOrBlank()) {
+                Text("地图已命中，请先在电脑设置页填写高德地图 Key。", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            } else {
+                val html = remember(spec, config) { amapHtml(spec, config!!) }
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().height(220.dp),
+                    factory = { context ->
+                        WebView(context).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webViewClient = WebViewClient()
+                            tag = html.hashCode()
+                            loadDataWithBaseURL("https://webapi.amap.com/", html, "text/html", "UTF-8", null)
+                        }
+                    },
+                    update = { view ->
+                        if (view.tag != html.hashCode()) {
+                            view.tag = html.hashCode()
+                            view.loadDataWithBaseURL("https://webapi.amap.com/", html, "text/html", "UTF-8", null)
+                        }
+                    },
+                )
+            }
+            Text(spec.query.ifBlank { spec.label.ifBlank { "位置地图" } }, Modifier.padding(horizontal = 11.dp, vertical = 8.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        }
+    }
+}
+
+private fun markdownToHtml(markdown: String): String {
+    val output = mutableListOf<String>()
+    var listType: String? = null
+    var inCode = false
+    fun closeList() { listType?.let { output += "</$it>" }; listType = null }
+    for (raw in markdown.replace("\r\n", "\n").replace('\r', '\n').lines()) {
+        val line = raw.trimEnd()
+        if (line.trimStart().startsWith("```")) {
+            closeList()
+            output += if (inCode) "</code></pre>" else "<pre><code>"
+            inCode = !inCode
+            continue
+        }
+        if (inCode) { output += Html.escapeHtml(line) + "\n"; continue }
+        val bullet = Regex("^\\s*[-*+]\\s+(.+)$").find(line)
+        val ordered = Regex("^\\s*\\d+[.)]\\s+(.+)$").find(line)
+        if (bullet != null || ordered != null) {
+            val nextType = if (ordered != null) "ol" else "ul"
+            if (listType != nextType) { closeList(); output += "<$nextType>"; listType = nextType }
+            output += "<li>${inlineMarkdownHtml((bullet ?: ordered)!!.groupValues[1])}</li>"
+            continue
+        }
+        closeList()
+        if (line.isBlank()) { output += "<br>"; continue }
+        val heading = Regex("^(#{1,6})\\s+(.+)$").find(line)
+        output += when {
+            heading != null -> {
+                val size = (7 - heading.groupValues[1].length).coerceIn(2, 5)
+                "<h$size>${inlineMarkdownHtml(heading.groupValues[2])}</h$size>"
+            }
+            line.startsWith(">") -> "<blockquote>${inlineMarkdownHtml(line.removePrefix(">").trimStart())}</blockquote>"
+            else -> "<div>${inlineMarkdownHtml(line)}</div>"
+        }
+    }
+    closeList()
+    if (inCode) output += "</code></pre>"
+    return output.joinToString("")
+}
+
+private fun inlineMarkdownHtml(value: String): String {
+    var html = Html.escapeHtml(value)
+    html = Regex("`([^`]+)`").replace(html, "<code>$1</code>")
+    html = Regex("\\[([^]]+)]\\((https?://[^)]+)\\)").replace(html, "<a href=\"$2\">$1</a>")
+    html = Regex("\\*\\*([^*]+)\\*\\*").replace(html, "<b>$1</b>")
+    html = Regex("__([^_]+)__").replace(html, "<b>$1</b>")
+    html = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)").replace(html, "<i>$1</i>")
+    return html
+}
+
+private fun amapHtml(spec: MapSpec, config: MapConfig): String {
+    val encodedKey = URLEncoder.encode(config.apiKey, StandardCharsets.UTF_8.toString())
+    val center = if (spec.longitude != null && spec.latitude != null) "[${spec.longitude},${spec.latitude}]" else "null"
+    return """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><style>html,body,#map{width:100%;height:100%;margin:0;background:#eeeae1}</style></head>
+        <body><div id="map"></div><script>window._AMapSecurityConfig={securityJsCode:${JSONObject.quote(config.securityCode)}};</script>
+        <script src="https://webapi.amap.com/maps?v=2.0&key=$encodedKey"></script><script>
+        const center=$center; const map=new AMap.Map('map',{zoom:13,center:center||undefined});
+        if(center)new AMap.Marker({position:center,map:map,title:${JSONObject.quote(spec.label.ifBlank { "当前位置" })}});
+        const query=${JSONObject.quote(spec.query)};
+        if(query) AMap.plugin('AMap.PlaceSearch',()=>{const search=new AMap.PlaceSearch({map:map,pageSize:5});${if (spec.mode == "nearby") "if(center)search.searchNearBy(query,center,5000);else search.search(query);" else "search.search(query);"}});
+        </script></body></html>
+    """.trimIndent()
 }
 
 @Composable
@@ -307,7 +446,7 @@ private fun TokenActivityCard(usage: TokenActivity?) {
             "累计总量" -> days.groupBy { it.date.take(7) }.map { (month, group) ->
                 TokenDay(month, group.sumOf { it.tokens }, group.sumOf { it.cost })
             }.takeLast(12)
-            else -> days.takeLast(90)
+            else -> days.takeLast(90).asReversed()
         }
     }
     val positiveLevels = remember(points) { points.map { it.tokens }.filter { it > 0 }.distinct().sorted() }

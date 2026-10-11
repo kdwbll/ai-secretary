@@ -15,7 +15,21 @@ import okio.BufferedSink
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-data class ChatExchange(val id: Long, val createdAt: String, val user: String, val assistant: String)
+data class MapSpec(
+    val query: String,
+    val mode: String,
+    val label: String,
+    val latitude: Double?,
+    val longitude: Double?,
+)
+data class MapConfig(val apiKey: String, val securityCode: String)
+data class ChatExchange(
+    val id: Long,
+    val createdAt: String,
+    val user: String,
+    val assistant: String,
+    val maps: List<MapSpec>,
+)
 data class CollectedEvent(val id: Long, val createdAt: String, val source: String, val kind: String, val title: String, val content: String)
 data class UploadReceipt(val name: String, val summary: String)
 data class RemoteFile(val hash: String, val name: String, val createdAt: String, val summary: String)
@@ -60,9 +74,30 @@ object ApiClient {
             buildList {
                 for (index in array.length() - 1 downTo 0) {
                     val item = array.getJSONObject(index)
-                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message")))
+                    val mapArray = item.optJSONObject("attachments")?.optJSONArray("maps")
+                    val maps = buildList {
+                        if (mapArray != null) for (mapIndex in 0 until mapArray.length()) {
+                            val map = mapArray.getJSONObject(mapIndex)
+                            add(MapSpec(
+                                query = map.optString("query"),
+                                mode = map.optString("mode", "place"),
+                                label = map.optString("label"),
+                                latitude = map.optionalDouble("latitude"),
+                                longitude = map.optionalDouble("longitude"),
+                            ))
+                        }
+                    }
+                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps))
                 }
             }
+        }
+    }
+
+    suspend fun mapConfig(server: String, token: String): MapConfig = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/map/config", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取地图配置失败（${response.code}）")
+            val result = JSONObject(response.body?.string().orEmpty())
+            MapConfig(result.optString("api_key"), result.optString("security_code"))
         }
     }
 
@@ -165,6 +200,9 @@ object ApiClient {
         return uri.lastPathSegment ?: "mobile-upload"
     }
 }
+
+private fun JSONObject.optionalDouble(name: String): Double? =
+    if (has(name) && !isNull(name)) optDouble(name).takeUnless { it.isNaN() } else null
 
 private class ContentUriBody(private val context: Context, private val uri: Uri, private val mime: String) : RequestBody() {
     override fun contentType() = mime.toMediaTypeOrNull()
