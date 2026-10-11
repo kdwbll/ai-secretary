@@ -1,5 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 from core.secretary.database import Database
@@ -63,6 +64,16 @@ class MemoryTests(unittest.TestCase):
         repaired = self.memory.ensure_daily()
         self.assertIn("damaged tail", repaired.body)
         self.assertTrue(list(path.parent.glob(path.name + ".invalid-utf8-*.bak")))
+
+    def test_concurrent_daily_writes_do_not_lose_events_or_temp_files(self):
+        messages = [f"并发事件-{index}" for index in range(20)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(self.memory.append_daily, messages))
+        daily = self.memory.ensure_daily()
+        text = self.memory.storage.read_text(daily.path)
+        for message in messages:
+            self.assertIn(message, text)
+        self.assertFalse(list((self.memory.storage.root / "daily").glob(".*.tmp")))
 
 
 if __name__ == "__main__":

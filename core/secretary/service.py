@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -25,9 +28,10 @@ DOMAIN_HINTS = {
 
 
 class SecretaryService:
-    def __init__(self, memory: MemoryEngine, database: Database, models: ModelRouter, prompt_dir: Path, notifications=None):
+    def __init__(self, memory: MemoryEngine, database: Database, models: ModelRouter, prompt_dir: Path, notifications=None, secret_store=None):
         self.memory, self.database, self.models, self.prompt_dir = memory, database, models, prompt_dir
         self.notifications = notifications
+        self.secret_store = secret_store
 
     def initialize(self) -> None:
         self.memory.initialize()
@@ -66,6 +70,14 @@ class SecretaryService:
             location_context = self._location_context()
             if location_context:
                 context += "\n\n" + location_context
+            context += (
+                "\n\n## 本轮地图展示能力\n"
+                "前端会在这条回答下方自动插入高德地图卡片，并按本轮地图检索短语显示地点。"
+                "不要声称‘不能画地图’或‘不能展示地图’；正文只需说明检索结论和必要限制。"
+            )
+            poi_context = self._amap_poi_context(location_plan)
+            if poi_context:
+                context += "\n\n" + poi_context
         if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
             context += "\n\n" + self._health_context()
         email_context = self._email_context(message)
@@ -154,6 +166,63 @@ class SecretaryService:
             "query": plan.get("query", ""), "mode": plan.get("mode", "place"),
             "label": item.get("label", ""), "latitude": item.get("latitude"), "longitude": item.get("longitude"),
         }]
+
+    def _amap_poi_context(self, plan: dict[str, Any]) -> str:
+        """Fetch narrowly-scoped POI facts from AMap when a Web Service key exists.
+
+        The browser JS key only renders the map.  A distinct encrypted Web
+        Service key is required before model-visible location search is made.
+        """
+        encrypted = self.database.setting("map_web_service_key", "") or ""
+        if not encrypted or not self.secret_store:
+            return (
+                "## 高德地点联网检索\n未配置高德 Web 服务 API Key。地图卡片仍可展示，"
+                "但正文没有实时商家详情；不要编造营业状态、评分、价格或团购价。"
+            )
+        try:
+            key = self.secret_store.decrypt(encrypted)
+            query = str(plan.get("query") or "").strip()[:120]
+            params: dict[str, Any] = {
+                "key": key, "keywords": query, "page_size": 5, "show_fields": "business",
+            }
+            endpoint = "https://restapi.amap.com/v5/place/text"
+            if plan.get("mode") == "nearby":
+                rows = self.database.rows(
+                    "SELECT latitude,longitude FROM locations WHERE enabled=1 AND latitude IS NOT NULL AND longitude IS NOT NULL "
+                    "ORDER BY CASE source WHEN 'android' THEN 0 WHEN 'browser' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1"
+                )
+                if rows:
+                    endpoint = "https://restapi.amap.com/v5/place/around"
+                    params.update({
+                        "location": f"{rows[0]['longitude']},{rows[0]['latitude']}",
+                        "radius": 10000, "sortrule": "distance",
+                    })
+            with urlopen(endpoint + "?" + urlencode(params), timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if str(payload.get("status")) != "1":
+                return "## 高德地点联网检索\n高德地点查询暂时失败；地图卡片仍会展示，不要编造实时商家信息。"
+            pois = payload.get("pois") or []
+            if not pois:
+                return "## 高德地点联网检索\n本轮没有查到匹配地点；地图卡片仍会按关键词检索。"
+            lines = [
+                "## 高德地点联网检索结果（本轮实时数据）",
+                "以下数据来自高德 Web 服务；其中人均消费不是团购实时价，回答时必须明确区分。",
+            ]
+            for poi in pois[:5]:
+                business = poi.get("business") or {}
+                fields = [f"名称：{poi.get('name') or '未命名'}"]
+                if poi.get("address"):
+                    fields.append(f"地址：{poi['address']}")
+                if poi.get("distance") not in (None, ""):
+                    fields.append(f"距离：{poi['distance']} 米")
+                if business.get("rating") not in (None, ""):
+                    fields.append(f"评分：{business['rating']}")
+                if business.get("cost") not in (None, ""):
+                    fields.append(f"参考人均：{business['cost']} 元")
+                lines.append("- " + "；".join(fields))
+            return "\n".join(lines)
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            return "## 高德地点联网检索\n网络或高德服务暂时不可用；地图卡片仍会展示，不要编造实时商家信息。"
 
     @staticmethod
     def _chat_title(message: str) -> str:

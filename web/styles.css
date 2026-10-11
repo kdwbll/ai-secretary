@@ -36,6 +36,7 @@
 .coordinate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .toggle-label{display:flex!important;align-items:center;gap:8px}.toggle-label input{width:auto!important}
 .history-search{margin:10px 44px 14px 0}.history-search input{min-width:250px}
+.report-output.message-copy{white-space:normal;font:12px/1.8 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;margin-top:18px}.report-output.message-copy h2,.report-output.message-copy h3{margin:8px 0}.report-output.message-copy p,.report-output.message-copy ul{margin:7px 0}.report-output.message-copy ul{padding-left:22px}
 
 :root[data-theme="dark"]{--ink:#e6e9e5;--muted:#aeb7b0;--paper:#17201c;--cream:#29332e;--green:#497b63;--green2:#102a20;--line:#455049;--white:#202924;--orange:#e29a63}
 :root[data-theme="dark"] body{color-scheme:dark}:root[data-theme="dark"] input,:root[data-theme="dark"] textarea,:root[data-theme="dark"] select{background:#18211d;color:var(--ink)}

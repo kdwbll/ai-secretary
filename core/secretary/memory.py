@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Iterable, Optional
 
 from .database import Database
@@ -50,6 +51,7 @@ class MemoryEngine:
     def __init__(self, storage: Storage, database: Database):
         self.storage = storage
         self.database = database
+        self._write_lock = RLock()
 
     def initialize(self) -> None:
         existing = set(self.storage.list(".md"))
@@ -78,58 +80,62 @@ class MemoryEngine:
         return "\n".join(lines)
 
     def save(self, doc: MemoryDocument, reason: str, actor: str = "AI") -> None:
-        try:
-            before = self.storage.read_text(doc.path)
-        except FileNotFoundError:
-            before = ""
-        after = self._serialize(doc)
-        if before == after:
-            return
-        self.storage.write_text(doc.path, after)
-        self.database.record_mutation(doc.path, before, after, reason, actor)
+        with self._write_lock:
+            try:
+                before = self.storage.read_text(doc.path)
+            except FileNotFoundError:
+                before = ""
+            after = self._serialize(doc)
+            if before == after:
+                return
+            self.storage.write_text(doc.path, after)
+            self.database.record_mutation(doc.path, before, after, reason, actor)
 
     def ensure_daily(self, day: Optional[date] = None) -> MemoryDocument:
-        day = day or date.today()
-        path = f"daily/{day.isoformat()}.md"
-        try:
-            return self.parse(path)
-        except FileNotFoundError:
-            doc = MemoryDocument(path, {"id": f"daily-{day.isoformat()}", "type": "daily", "related": []}, f"# {day.isoformat()}\n\n## 流水\n")
-            self.save(doc, "创建每日日志", "system")
-            return self.parse(path)
-        except UnicodeDecodeError:
-            repair = getattr(self.storage, "repair_utf8", None)
-            if not repair:
-                raise
-            repair(path)
-            return self.parse(path)
+        with self._write_lock:
+            day = day or date.today()
+            path = f"daily/{day.isoformat()}.md"
+            try:
+                return self.parse(path)
+            except FileNotFoundError:
+                doc = MemoryDocument(path, {"id": f"daily-{day.isoformat()}", "type": "daily", "related": []}, f"# {day.isoformat()}\n\n## 流水\n")
+                self.save(doc, "创建每日日志", "system")
+                return self.parse(path)
+            except UnicodeDecodeError:
+                repair = getattr(self.storage, "repair_utf8", None)
+                if not repair:
+                    raise
+                repair(path)
+                return self.parse(path)
 
     def append_daily(self, text: str, source: str = "对话", inferred: bool = False) -> None:
-        doc = self.ensure_daily()
-        marker = " (推测)" if inferred else ""
-        stamp = datetime.now().strftime("%H:%M")
-        doc.body = doc.body.rstrip() + f"\n- {stamp} {text}{marker} (来源: {date.today().isoformat()} {source})\n"
-        self.save(doc, "记录新事件")
+        with self._write_lock:
+            doc = self.ensure_daily()
+            marker = " (推测)" if inferred else ""
+            stamp = datetime.now().strftime("%H:%M")
+            doc.body = doc.body.rstrip() + f"\n- {stamp} {text}{marker} (来源: {date.today().isoformat()} {source})\n"
+            self.save(doc, "记录新事件")
 
     def upsert_fact(self, path: str, section: str, fact: str, source: str, old_fact: Optional[str] = None, inferred: bool = False, condition: Optional[str] = None) -> None:
-        doc = self.parse(path)
-        line = fact.strip()
-        if inferred and "(推测)" not in line:
-            line += " (推测)"
-        if condition and "(条件:" not in line:
-            line += f" (条件: {condition})"
-        if "(来源:" not in line:
-            line += f" (来源: {source})"
-        entry = "- " + line
-        if old_fact:
-            pattern = re.compile(r"^- .*" + re.escape(old_fact) + r".*$", re.M)
-            if pattern.search(doc.body):
-                doc.body = pattern.sub(entry, doc.body, count=1)
-            else:
+        with self._write_lock:
+            doc = self.parse(path)
+            line = fact.strip()
+            if inferred and "(推测)" not in line:
+                line += " (推测)"
+            if condition and "(条件:" not in line:
+                line += f" (条件: {condition})"
+            if "(来源:" not in line:
+                line += f" (来源: {source})"
+            entry = "- " + line
+            if old_fact:
+                pattern = re.compile(r"^- .*" + re.escape(old_fact) + r".*$", re.M)
+                if pattern.search(doc.body):
+                    doc.body = pattern.sub(entry, doc.body, count=1)
+                else:
+                    doc.body = self._insert_section(doc.body, section, entry)
+            elif entry not in doc.body:
                 doc.body = self._insert_section(doc.body, section, entry)
-        elif entry not in doc.body:
-            doc.body = self._insert_section(doc.body, section, entry)
-        self.save(doc, f"更新事实：{fact}")
+            self.save(doc, f"更新事实：{fact}")
 
     @staticmethod
     def _insert_section(body: str, section: str, entry: str) -> str:

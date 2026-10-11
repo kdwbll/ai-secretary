@@ -171,7 +171,7 @@ fun SecondBrainApp(intent: Intent?) {
             Column(Modifier.fillMaxSize().padding(padding).background(Paper)) {
                 Text(notice, Modifier.fillMaxWidth().background(if (connected == true) Color(0xFFE6EEE8) else Color(0xFFF2E7E2)).padding(horizontal = 16.dp, vertical = 9.dp), style = MaterialTheme.typography.bodySmall)
                 when (selectedTab) {
-                    0 -> ConversationScreen(chats, mapConfig, draft, { draft = it }, sending, uploading, onSend = {
+                    0 -> ConversationScreen(server, chats, mapConfig, draft, { draft = it }, sending, uploading, onSend = {
                         val message = draft.trim()
                         if (message.isNotEmpty()) {
                             draft = ""
@@ -216,7 +216,7 @@ fun SecondBrainApp(intent: Intent?) {
 }
 
 @Composable
-private fun ConversationScreen(chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
+private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
     val listState = rememberLazyListState()
     LaunchedEffect(chats.size, chats.lastOrNull()?.assistant) {
         if (chats.isNotEmpty()) listState.scrollToItem(chats.lastIndex)
@@ -225,8 +225,8 @@ private fun ConversationScreen(chats: List<ChatExchange>, mapConfig: MapConfig?,
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
             if (chats.isEmpty()) item { Text("这里会实时显示手机和电脑两端的会话。", color = Color.Gray, modifier = Modifier.padding(12.dp)) }
             items(chats, key = { it.id }) { chat ->
-                MessageBubble(chat.user, true, emptyList(), mapConfig)
-                MessageBubble(chat.assistant.ifBlank { "正在处理…" }, false, chat.maps, mapConfig)
+                MessageBubble(server, chat.user, true, emptyList(), mapConfig)
+                MessageBubble(server, chat.assistant.ifBlank { "正在处理…" }, false, chat.maps, mapConfig)
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -238,13 +238,13 @@ private fun ConversationScreen(chats: List<ChatExchange>, mapConfig: MapConfig?,
 }
 
 @Composable
-private fun MessageBubble(text: String, fromUser: Boolean, maps: List<MapSpec>, mapConfig: MapConfig?) {
+private fun MessageBubble(server: String, text: String, fromUser: Boolean, maps: List<MapSpec>, mapConfig: MapConfig?) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
         Surface(color = if (fromUser) Forest else Color(0xFFFFFDF8), shape = RoundedCornerShape(15.dp), tonalElevation = if (fromUser) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 310.dp)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (fromUser) Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
                 else MarkdownText(text)
-                maps.forEach { spec -> AmapCard(spec, mapConfig) }
+                maps.forEach { spec -> AmapCard(server, spec, mapConfig) }
             }
         }
     }
@@ -269,7 +269,7 @@ private fun MarkdownText(markdown: String) {
 }
 
 @Composable
-private fun AmapCard(spec: MapSpec, config: MapConfig?) {
+private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F1E8)), modifier = Modifier.fillMaxWidth()) {
         Column {
             if (config?.apiKey.isNullOrBlank()) {
@@ -284,13 +284,16 @@ private fun AmapCard(spec: MapSpec, config: MapConfig?) {
                             settings.domStorageEnabled = true
                             webViewClient = WebViewClient()
                             tag = html.hashCode()
-                            loadDataWithBaseURL("https://webapi.amap.com/", html, "text/html", "UTF-8", null)
+                            // Keep the same origin as the paired server. AMap Web keys
+                            // commonly whitelist that LAN origin; using webapi.amap.com
+                            // as a fabricated origin leaves an empty bordered WebView.
+                            loadDataWithBaseURL(server.trimEnd('/') + "/", html, "text/html", "UTF-8", null)
                         }
                     },
                     update = { view ->
                         if (view.tag != html.hashCode()) {
                             view.tag = html.hashCode()
-                            view.loadDataWithBaseURL("https://webapi.amap.com/", html, "text/html", "UTF-8", null)
+                            view.loadDataWithBaseURL(server.trimEnd('/') + "/", html, "text/html", "UTF-8", null)
                         }
                     },
                 )
@@ -305,25 +308,44 @@ private fun markdownToHtml(markdown: String): String {
     var listType: String? = null
     var inCode = false
     fun closeList() { listType?.let { output += "</$it>" }; listType = null }
-    for (raw in markdown.replace("\r\n", "\n").replace('\r', '\n').lines()) {
+    val lines = markdown.replace("\r\n", "\n").replace('\r', '\n').lines()
+    var index = 0
+    while (index < lines.size) {
+        val raw = lines[index]
         val line = raw.trimEnd()
         if (line.trimStart().startsWith("```")) {
             closeList()
             output += if (inCode) "</code></pre>" else "<pre><code>"
             inCode = !inCode
+            index++
             continue
         }
-        if (inCode) { output += Html.escapeHtml(line) + "\n"; continue }
+        if (inCode) { output += Html.escapeHtml(line) + "\n"; index++; continue }
+        if (index + 1 < lines.size && line.contains('|') && Regex("^\\s*\\|?\\s*:?-{3,}").containsMatchIn(lines[index + 1])) {
+            closeList()
+            val headers = markdownTableCells(line)
+            index += 2
+            while (index < lines.size && lines[index].contains('|') && lines[index].isNotBlank()) {
+                val cells = markdownTableCells(lines[index])
+                output += "<p>" + headers.mapIndexed { cellIndex, header ->
+                    val value = cells.getOrNull(cellIndex).orEmpty()
+                    "<b>${inlineMarkdownHtml(header)}：</b>${inlineMarkdownHtml(value)}"
+                }.joinToString("　") + "</p>"
+                index++
+            }
+            continue
+        }
         val bullet = Regex("^\\s*[-*+]\\s+(.+)$").find(line)
         val ordered = Regex("^\\s*\\d+[.)]\\s+(.+)$").find(line)
         if (bullet != null || ordered != null) {
             val nextType = if (ordered != null) "ol" else "ul"
             if (listType != nextType) { closeList(); output += "<$nextType>"; listType = nextType }
             output += "<li>${inlineMarkdownHtml((bullet ?: ordered)!!.groupValues[1])}</li>"
+            index++
             continue
         }
         closeList()
-        if (line.isBlank()) { output += "<br>"; continue }
+        if (line.isBlank()) { output += "<br>"; index++; continue }
         val heading = Regex("^(#{1,6})\\s+(.+)$").find(line)
         output += when {
             heading != null -> {
@@ -333,11 +355,15 @@ private fun markdownToHtml(markdown: String): String {
             line.startsWith(">") -> "<blockquote>${inlineMarkdownHtml(line.removePrefix(">").trimStart())}</blockquote>"
             else -> "<div>${inlineMarkdownHtml(line)}</div>"
         }
+        index++
     }
     closeList()
     if (inCode) output += "</code></pre>"
     return output.joinToString("")
 }
+
+private fun markdownTableCells(line: String): List<String> =
+    line.trim().trim('|').split('|').map { it.trim() }
 
 private fun inlineMarkdownHtml(value: String): String {
     var html = Html.escapeHtml(value)
@@ -353,14 +379,15 @@ private fun amapHtml(spec: MapSpec, config: MapConfig): String {
     val encodedKey = URLEncoder.encode(config.apiKey, StandardCharsets.UTF_8.toString())
     val center = if (spec.longitude != null && spec.latitude != null) "[${spec.longitude},${spec.latitude}]" else "null"
     return """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><style>html,body,#map{width:100%;height:100%;margin:0;background:#eeeae1}</style></head>
-        <body><div id="map"></div><script>window._AMapSecurityConfig={securityJsCode:${JSONObject.quote(config.securityCode)}};</script>
-        <script src="https://webapi.amap.com/maps?v=2.0&key=$encodedKey"></script><script>
-        const center=$center; const map=new AMap.Map('map',{zoom:13,center:center||undefined});
-        if(center)new AMap.Marker({position:center,map:map,title:${JSONObject.quote(spec.label.ifBlank { "当前位置" })}});
-        const query=${JSONObject.quote(spec.query)};
-        if(query) AMap.plugin('AMap.PlaceSearch',()=>{const search=new AMap.PlaceSearch({map:map,pageSize:5});${if (spec.mode == "nearby") "if(center)search.searchNearBy(query,center,5000);else search.search(query);" else "search.search(query);"}});
-        </script></body></html>
+        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><style>html,body,#map{width:100%;height:100%;margin:0;background:#eeeae1;font-family:sans-serif}#state{position:absolute;inset:0;z-index:9;display:grid;place-items:center;padding:24px;text-align:center;color:#526158;background:#f5f1e8}#state a{display:block;margin-top:12px;color:#315d49}</style></head>
+        <body><div id="map"></div><div id="state">地图加载中…</div><script>
+        window._AMapSecurityConfig={securityJsCode:${JSONObject.quote(config.securityCode)}};
+        const state=document.getElementById('state'),center=$center,query=${JSONObject.quote(spec.query)};
+        const fallback='https://uri.amap.com/search?keyword='+encodeURIComponent(query||${JSONObject.quote(spec.label.ifBlank { "当前位置" })})+(center?'&center='+center.join(','):'')+'&callnative=1';
+        function fail(message){state.innerHTML=message+'<a href="'+fallback+'">在高德地图中打开 ↗</a>';state.style.display='grid'}
+        function ready(){try{const map=new AMap.Map('map',{zoom:13,center:center||undefined});if(center)new AMap.Marker({position:center,map:map,title:${JSONObject.quote(spec.label.ifBlank { "当前位置" })}});if(query)AMap.plugin('AMap.PlaceSearch',()=>{const search=new AMap.PlaceSearch({map:map,pageSize:5});${if (spec.mode == "nearby") "if(center)search.searchNearBy(query,center,5000);else search.search(query);" else "search.search(query);"}});state.style.display='none'}catch(error){fail('地图初始化失败，请检查 Key 的域名白名单')}}</script>
+        <script src="https://webapi.amap.com/maps?v=2.0&key=$encodedKey" onload="ready()" onerror="fail('地图资源加载失败，请检查手机网络')"></script>
+        <script>setTimeout(()=>{if(state.style.display!=='none')fail('地图加载超时，请检查网络与高德 Key')},8000)</script></body></html>
     """.trimIndent()
 }
 

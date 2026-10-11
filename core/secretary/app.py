@@ -29,7 +29,7 @@ from .storage import LocalStorage
 from .secrets import SecretStore
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.3"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
@@ -37,7 +37,7 @@ SECRETS.migrate_database(DB)
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB, SECRETS)
 NOTIFICATIONS = NotificationService(DB)
-SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish)
+SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish, SECRETS)
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
@@ -121,6 +121,7 @@ class LocationSettingsInput(BaseModel):
     map_provider: str = "amap"
     map_api_key: str = ""
     map_security_code: str = ""
+    map_web_service_key: str = ""
 
 
 class LocationReportInput(BaseModel):
@@ -488,6 +489,7 @@ def location_settings():
         "map_provider": DB.setting("map_provider", "amap"),
         "has_map_api_key": bool(DB.setting("map_api_key", "")),
         "has_map_security_code": bool(DB.setting("map_security_code", "")),
+        "has_map_web_service_key": bool(DB.setting("map_web_service_key", "")),
         "sources": DB.rows("SELECT source,label,latitude,longitude,enabled,updated_at FROM locations ORDER BY updated_at DESC"),
     }
 
@@ -504,6 +506,8 @@ def location_settings_save(body: LocationSettingsInput):
         DB.set_setting("map_api_key", SECRETS.encrypt(body.map_api_key))
     if body.map_security_code:
         DB.set_setting("map_security_code", SECRETS.encrypt(body.map_security_code))
+    if body.map_web_service_key:
+        DB.set_setting("map_web_service_key", SECRETS.encrypt(body.map_web_service_key))
     with DB.connect() as db:
         db.execute(
             "INSERT INTO locations(source,label,latitude,longitude,enabled,updated_at) VALUES('default',?,?,?,?,datetime('now','localtime')) "

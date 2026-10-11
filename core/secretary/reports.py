@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from .database import Database
 from .memory import MemoryEngine
@@ -14,10 +15,11 @@ class ReportService:
         self.notify = notify
 
     def morning(self) -> str:
-        daily = self.memory.ensure_daily()
-        events = self.database.rows("SELECT kind,payload FROM events WHERE created_at >= ? ORDER BY id DESC LIMIT 20", (date.today().isoformat(),))
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        daily = self.memory.ensure_daily(today)
+        events = self.database.rows("SELECT kind,payload FROM events WHERE created_at >= ? ORDER BY id DESC LIMIT 20", (today.isoformat(),))
         pickups = [e for e in events if e["kind"] == "pickup"]
-        lines = [f"# {date.today().isoformat()} 早报", "", "## 今天最重要的事", "- 先完成一个最关键且有截止时间的动作。"]
+        lines = [f"# {today.isoformat()} 早报", "", "## 今天最重要的事", "- 先完成一个最关键且有截止时间的动作。"]
         if pickups:
             lines += ["", "## 待办提醒", f"- 有 {len(pickups)} 个快递待取，请查看今日流水中的取件码。"]
         projects = self.memory.storage.list(".md")
@@ -65,7 +67,8 @@ class ReportService:
 
     def _save(self, kind: str, content: str) -> None:
         with self.database.connect() as db:
-            db.execute("INSERT INTO reports(created_at,kind,content) VALUES(?,?,?)", (datetime.now().isoformat(timespec="seconds"), kind, content))
+            created_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+            db.execute("INSERT INTO reports(created_at,kind,content) VALUES(?,?,?)", (created_at, kind, content))
         if self.notify:
             titles = {"morning": "第二大脑早报", "evening": "今晚复盘", "weekly": "每周整理"}
             self.notify(kind, titles.get(kind, "第二大脑"), content)

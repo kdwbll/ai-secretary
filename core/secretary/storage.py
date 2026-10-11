@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Iterable
 
 
@@ -49,9 +51,24 @@ class LocalStorage(Storage):
     def write_text(self, relative: str, content: str) -> None:
         path = self._path(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(path.suffix + ".tmp")
-        temp.write_text(content, encoding="utf-8")
-        temp.replace(path)
+        # A fixed ``.tmp`` name races when the Android collector, chat memory
+        # and scheduled reports update the same daily note at once.  Each
+        # writer gets a unique temporary file and the final replace is atomic.
+        temp_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                mode="w", encoding="utf-8", delete=False, dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp",
+            ) as temp:
+                temp.write(content)
+                temp.flush()
+                os.fsync(temp.fileno())
+                temp_path = Path(temp.name)
+            os.replace(temp_path, path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
     def delete(self, relative: str) -> None:
         self._path(relative).unlink(missing_ok=True)

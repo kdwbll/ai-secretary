@@ -44,7 +44,10 @@ class TimeLocationStreamTests(TestCase):
                 )
             self.assertNotIn("春熙路", service._context("帮我写个总结"))
             plan = service._location_plan("附近有什么咖啡店")
-            self.assertIn("春熙路", service._context("附近有什么咖啡店", location_plan=plan))
+            context = service._context("附近有什么咖啡店", location_plan=plan)
+            self.assertIn("春熙路", context)
+            self.assertIn("前端会在这条回答下方自动插入高德地图卡片", context)
+            self.assertIn("未配置高德 Web 服务 API Key", context)
             self.assertEqual(service._map_attachment(plan)[0]["mode"], "nearby")
 
     def test_stream_persists_title_and_is_searchable(self):
