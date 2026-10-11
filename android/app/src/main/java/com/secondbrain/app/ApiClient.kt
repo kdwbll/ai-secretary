@@ -30,14 +30,30 @@ object ApiClient {
 
     private fun base(server: String) = server.trim().trimEnd('/')
 
-    suspend fun health(server: String): Boolean = withContext(Dispatchers.IO) {
+    private fun request(server: String, path: String, token: String = ""): Request.Builder =
+        Request.Builder().url("${base(server)}$path").apply {
+            if (token.isNotBlank()) header("Authorization", "Bearer $token")
+        }
+
+    suspend fun health(server: String, token: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            client.newCall(Request.Builder().url("${base(server)}/api/health").get().build()).execute().use { response -> response.isSuccessful }
+            client.newCall(request(server, "/api/auth/status", token).get().build()).execute().use { response ->
+                response.isSuccessful && JSONObject(response.body?.string().orEmpty()).optBoolean("authenticated")
+            }
         } catch (_: Exception) { false }
     }
 
-    suspend fun chats(server: String): List<ChatExchange> = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url("${base(server)}/api/chats?limit=100").get().build()).execute().use { response ->
+    suspend fun pair(server: String, code: String, deviceName: String): String = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("code", code).put("device_name", deviceName).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/auth/pair").post(body).build()).execute().use { response ->
+            val content = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error(runCatching { JSONObject(content).optString("detail") }.getOrNull().orEmpty().ifBlank { "配对失败（${response.code}）" })
+            JSONObject(content).getString("token")
+        }
+    }
+
+    suspend fun chats(server: String, token: String): List<ChatExchange> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/chats?limit=100", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取会话失败（${response.code}）")
             val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("chats")
             buildList {
@@ -49,16 +65,16 @@ object ApiClient {
         }
     }
 
-    suspend fun sendChat(server: String, message: String): String = withContext(Dispatchers.IO) {
+    suspend fun sendChat(server: String, token: String, message: String): String = withContext(Dispatchers.IO) {
         val body = JSONObject().put("message", message).toString().toRequestBody("application/json".toMediaTypeOrNull())
-        client.newCall(Request.Builder().url("${base(server)}/api/chat").post(body).build()).execute().use { response ->
+        client.newCall(request(server, "/api/chat", token).post(body).build()).execute().use { response ->
             if (!response.isSuccessful) error("发送失败（${response.code}）")
             JSONObject(response.body?.string().orEmpty()).optString("answer", "已发送")
         }
     }
 
-    suspend fun events(server: String): List<CollectedEvent> = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url("${base(server)}/api/events?limit=100").get().build()).execute().use { response ->
+    suspend fun events(server: String, token: String): List<CollectedEvent> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/events?limit=100", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取采集记录失败（${response.code}）")
             val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("events")
             buildList {
@@ -71,20 +87,20 @@ object ApiClient {
         }
     }
 
-    suspend fun upload(context: Context, server: String, uri: Uri): UploadReceipt = withContext(Dispatchers.IO) {
+    suspend fun upload(context: Context, server: String, token: String, uri: Uri): UploadReceipt = withContext(Dispatchers.IO) {
         val name = displayName(context, uri)
         val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
         val body = ContentUriBody(context, uri, mime)
         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("file", name, body).build()
-        client.newCall(Request.Builder().url("${base(server)}/api/upload").post(multipart).build()).execute().use { response ->
+        client.newCall(request(server, "/api/upload", token).post(multipart).build()).execute().use { response ->
             if (!response.isSuccessful) error("上传失败（${response.code}）")
             val result = JSONObject(response.body?.string().orEmpty())
             UploadReceipt(name, result.optString("extracted_text", "文件已归档").take(500))
         }
     }
 
-    suspend fun files(server: String): List<RemoteFile> = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url("${base(server)}/api/files?limit=100").get().build()).execute().use { response ->
+    suspend fun files(server: String, token: String): List<RemoteFile> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/files?limit=100", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取文件记录失败（${response.code}）")
             val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("files")
             buildList {
@@ -96,8 +112,8 @@ object ApiClient {
         }
     }
 
-    suspend fun usage(server: String): TokenActivity = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url("${base(server)}/api/usage/activity?days=365").get().build()).execute().use { response ->
+    suspend fun usage(server: String, token: String): TokenActivity = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/usage/activity?days=365", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取 Token 用量失败（${response.code}）")
             val result = JSONObject(response.body?.string().orEmpty())
             val totals = result.getJSONObject("totals")
@@ -112,8 +128,8 @@ object ApiClient {
         }
     }
 
-    suspend fun deleteFile(server: String, hash: String) = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url("${base(server)}/api/files/$hash").delete().build()).execute().use { response ->
+    suspend fun deleteFile(server: String, token: String, hash: String) = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/files/$hash", token).delete().build()).execute().use { response ->
             if (!response.isSuccessful) error("删除文件失败（${response.code}）")
         }
     }

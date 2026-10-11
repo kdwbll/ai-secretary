@@ -70,6 +70,10 @@ CREATE INDEX IF NOT EXISTS idx_health_metric_time ON health_samples(metric, reco
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
+  created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT
+);
 """
 
 
@@ -94,9 +98,18 @@ def _add_chat_attachments(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE chat_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '{}'")
 
 
+def _add_access_tokens(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS access_tokens ("
+        "id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, "
+        "created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT)"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
+    Migration(3, "add device access tokens", _add_access_tokens),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -146,6 +159,7 @@ class Database:
         required = {
             "providers": {"consumption_level"},
             "chat_messages": {"attachments"},
+            "access_tokens": {"name", "token_hash", "revoked_at"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:

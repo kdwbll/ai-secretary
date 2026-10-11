@@ -7,9 +7,11 @@ import android.provider.Telephony
 
 class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val server = context.getSharedPreferences("second_brain", Context.MODE_PRIVATE).getString("server", null) ?: return
+        val preferences = context.getSharedPreferences("second_brain", Context.MODE_PRIVATE)
+        val server = preferences.getString("server", null) ?: return
+        val token = preferences.getString("access_token", null) ?: return
         Telephony.Sms.Intents.getMessagesFromIntent(intent).forEach { sms ->
-            SyncWorker.enqueueSms(context, server, sms.originatingAddress ?: "", sms.messageBody)
+            SyncWorker.enqueueSms(context, server, token, sms.originatingAddress ?: "", sms.messageBody)
         }
     }
 }

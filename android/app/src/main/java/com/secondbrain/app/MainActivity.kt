@@ -47,6 +47,8 @@ fun SecondBrainApp(intent: Intent?) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val preferences = remember { context.getSharedPreferences("second_brain", Context.MODE_PRIVATE) }
     var server by remember { mutableStateOf(preferences.getString("server", "http://192.168.1.2:8765") ?: "http://192.168.1.2:8765") }
+    var token by remember { mutableStateOf(preferences.getString("access_token", "") ?: "") }
+    var pairingCode by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf(intent?.getStringExtra(Intent.EXTRA_TEXT) ?: "") }
     var selectedTab by remember { mutableIntStateOf(0) }
     var connected by remember { mutableStateOf<Boolean?>(null) }
@@ -61,17 +63,17 @@ fun SecondBrainApp(intent: Intent?) {
     val scope = rememberCoroutineScope()
 
     suspend fun refresh() {
-        connected = ApiClient.health(server)
+        connected = ApiClient.health(server, token)
         if (connected == true) {
-            notice = "已与电脑联通 · 数据自动同步"
-            runCatching { chats = ApiClient.chats(server) }
-            runCatching { events = ApiClient.events(server) }
-            runCatching { files = ApiClient.files(server) }
-            runCatching { usage = ApiClient.usage(server) }
-        } else notice = "未连接电脑 · 检查同一 Wi-Fi、地址和电脑服务"
+            notice = "已安全联通电脑 · 数据自动同步"
+            runCatching { chats = ApiClient.chats(server, token) }
+            runCatching { events = ApiClient.events(server, token) }
+            runCatching { files = ApiClient.files(server, token) }
+            runCatching { usage = ApiClient.usage(server, token) }
+        } else notice = if (token.isBlank()) "尚未配对 · 请在电脑设置页生成配对码" else "未连接或授权已撤销 · 请检查地址后重新配对"
     }
 
-    LaunchedEffect(server) {
+    LaunchedEffect(server, token) {
         while (isActive) {
             refresh()
             delay(2500)
@@ -84,14 +86,14 @@ fun SecondBrainApp(intent: Intent?) {
             notice = "正在上传 ${uris.size} 个文件…"
             var success = 0
             for (uri in uris) {
-                runCatching { ApiClient.upload(context, server, uri) }
+                runCatching { ApiClient.upload(context, server, token, uri) }
                     .onSuccess { success++ }
                     .onFailure { notice = "上传失败：${it.message}" }
             }
             uploading = false
             if (success > 0) {
                 notice = "已上传 $success 个文件，电脑端也会显示"
-                files = ApiClient.files(server)
+                files = ApiClient.files(server, token)
                 selectedTab = 2
             }
         }
@@ -106,8 +108,8 @@ fun SecondBrainApp(intent: Intent?) {
                 val target = deleteTarget ?: return@TextButton
                 deleteTarget = null
                 scope.launch {
-                    runCatching { ApiClient.deleteFile(server, target.hash) }
-                        .onSuccess { files = ApiClient.files(server); notice = "文件已删除" }
+                    runCatching { ApiClient.deleteFile(server, token, target.hash) }
+                        .onSuccess { files = ApiClient.files(server, token); notice = "文件已删除" }
                         .onFailure { notice = "删除失败：${it.message}" }
                 }
             }) { Text("确认删除", color = Color(0xFFA04339)) } },
@@ -143,19 +145,34 @@ fun SecondBrainApp(intent: Intent?) {
                             sending = true
                             notice = "正在发送并等待回复…"
                             scope.launch {
-                                runCatching { ApiClient.sendChat(server, message) }
-                                    .onSuccess { draft = ""; notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server) }
-                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), message); draft = ""; notice = "电脑暂时不可达，消息已进入离线队列" }
+                                runCatching { ApiClient.sendChat(server, token, message) }
+                                    .onSuccess { draft = ""; notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server, token) }
+                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); draft = ""; notice = "电脑暂时不可达，消息已进入离线队列" }
                                 sending = false
                             }
                         }
                     }, onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
-                    else -> SettingsScreen(server, { server = it }, connected, usage, onSave = {
+                    else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
-                        scope.launch { refresh() }
+                        scope.launch {
+                            if (pairingCode.isNotBlank()) {
+                                notice = "正在安全配对…"
+                                val result = runCatching { ApiClient.pair(server, pairingCode.trim(), "${Build.MANUFACTURER} ${Build.MODEL}") }
+                                result
+                                    .onSuccess { newToken ->
+                                        token = newToken
+                                        pairingCode = ""
+                                        preferences.edit().putString("access_token", newToken).apply()
+                                        notice = "配对成功"
+                                    }
+                                    .onFailure { notice = "配对失败：${it.message}" }
+                                if (result.isFailure) return@launch
+                            }
+                            refresh()
+                        }
                     }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
                 }
             }
@@ -236,14 +253,15 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("连接电脑", style = MaterialTheme.typography.headlineSmall)
         OutlinedTextField(server, onServer, label = { Text("核心服务地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("保存并测试连接") }
-        Text(if (connected == true) "已成功访问电脑的第二大脑服务。" else "请确保两台设备连接同一 Wi-Fi，电脑服务使用 --host 0.0.0.0 启动。", color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(pairingCode, onPairingCode, label = { Text(if (hasToken) "新配对码（重新配对时填写）" else "电脑端 6 位配对码") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text(if (pairingCode.isBlank()) "保存并测试连接" else "保存并配对") }
+        Text(if (connected == true) "已使用设备令牌安全访问电脑服务。" else "先在电脑 Web 设置页生成配对码，再在这里填写。请确保两台设备连接同一 Wi-Fi。", color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.bodySmall)
             }
         }
         item { TokenActivityCard(usage) }

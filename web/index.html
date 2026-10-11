@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f3f0e8">
   <title>第二大脑 · 本地 AI 助理</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=0.5.0">
+  <link rel="stylesheet" href="/assets/styles.css?v=0.6.0">
 </head>
 <body>
   <div class="shell">
@@ -91,7 +91,8 @@
           <article class="setting-card"><p class="card-label">01 · 供应商</p><h2>添加多个 AI</h2><form id="provider-form"><label>模板<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option><option>自定义</option></select></label><label>显示名称<input id="provider-name" value="OpenAI" placeholder="例如 我的 OpenAI"></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅保存在本机 SQLite"></label><label>模型列表<input id="provider-model" placeholder="多个模型用逗号分隔"></label><label>单次消耗程度<select id="provider-consumption"><option value="low">小 · 更省额度，回答更短</option><option value="medium" selected>中 · 日常平衡</option><option value="high">大 · 更充分，消耗更多</option></select></label><button class="primary" type="submit">保存供应商</button></form><div id="provider-list" class="provider-list"></div></article>
           <article class="setting-card route-card"><p class="card-label">02 · 任务路由</p><h2>分别选择处理模型</h2><p class="muted">文字、图片和视频互不影响；对话页还可以临时切换模型。</p><form id="route-form"><label>文字处理 <small>对话、规划、记忆整理</small><select id="text-route"><option value="">尚未配置</option></select></label><label>图片处理 <small>照片、截图、小票、体检报告 OCR</small><select id="vision-route"><option value="">尚未配置</option></select></label><label>视频处理 <small>本机抽取关键帧后理解</small><select id="video-route"><option value="">未配置时使用图片模型</option></select></label><button class="primary" type="submit">保存任务分配</button></form></article>
           <article class="setting-card"><p class="card-label">03 · 邮件</p><h2>连接只读邮箱</h2><p class="muted">QQ 邮箱请使用“授权码”，不是 QQ 密码。系统每 30 分钟只读同步未读邮件。</p><form id="email-form"><label>邮箱类型<select id="email-template"><option value="imap.qq.com">QQ 邮箱</option><option value="imap.163.com">163 邮箱</option><option value="imap.126.com">126 邮箱</option><option value="custom">自定义 IMAP</option></select></label><label>IMAP 地址<input id="email-host" value="imap.qq.com"></label><label>邮箱账号<input id="email-user" type="email" placeholder="name@qq.com"></label><label>授权码<input id="email-code" type="password" autocomplete="off" placeholder="邮箱设置中生成的授权码"></label><div class="button-row"><button class="primary" type="submit">保存邮箱</button><button class="secondary" id="sync-email" type="button">立即同步</button></div></form><div id="email-status" class="connection-status">尚未连接</div></article>
-          <article class="setting-card"><p class="card-label">04 · 短信与通知</p><h2>由 Android 手机采集</h2><ol class="steps"><li>在 Android Studio 编译并安装 <code>android/</code>。</li><li>手机与电脑连接同一可信 Wi‑Fi。</li><li>在 App 中填入电脑局域网地址。</li><li>明确授予短信和通知读取权限。</li></ol><p class="muted">短信先在手机离线排队，连上电脑后同步；验证码和营销短信会自动忽略。</p></article>
+          <article class="setting-card"><p class="card-label">04 · 设备安全</p><h2>配对手机</h2><p class="muted">局域网设备必须先配对才能读取记忆、会话和文件。配对码仅 5 分钟有效且只能使用一次。</p><button id="create-pairing-code" class="primary" type="button">生成 6 位配对码</button><div id="pairing-code" class="pairing-code hidden" aria-live="polite"></div><div id="paired-devices" class="provider-list"><p class="muted">正在读取已配对设备…</p></div></article>
+          <article class="setting-card"><p class="card-label">05 · 短信与通知</p><h2>由 Android 手机采集</h2><ol class="steps"><li>安装 Android 伴侣 App。</li><li>手机与电脑连接同一可信 Wi‑Fi。</li><li>在 App 中填入电脑局域网地址和配对码。</li><li>明确授予短信和通知读取权限。</li></ol><p class="muted">短信先在手机离线排队，连上电脑后携带设备令牌同步；验证码和营销短信会自动忽略。</p></article>
           <article class="setting-card usage-card">
             <div class="usage-heading"><div><p class="card-label">Token 活动</p><h2>模型使用情况</h2></div><div class="usage-modes" role="group" aria-label="Token 活动统计方式"><button class="usage-mode active" data-mode="daily" type="button">每天</button><button class="usage-mode" data-mode="weekly" type="button">每周</button><button class="usage-mode" data-mode="cumulative" type="button">累计总量</button></div></div>
             <div id="token-activity" class="token-activity" aria-live="polite"><p class="muted">正在读取 Token 活动…</p></div>
@@ -106,6 +107,6 @@
   <dialog id="interview-dialog"><button class="dialog-close" aria-label="关闭">×</button><p class="card-label" id="interview-domain">冷启动采访</p><div class="progress"><i></i></div><h2 id="interview-question">加载中…</h2><textarea id="interview-answer" rows="4" placeholder="可以跳过，也可以只说最重要的部分"></textarea><div class="dialog-actions"><button id="skip-question" class="text-button">跳过</button><button id="next-question" class="primary">下一题 →</button></div></dialog>
   <dialog id="history-dialog" class="history-dialog"><button id="history-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">聊天记录</p><h2>最近的对话</h2><p class="muted">可以只删除对话；勾选后会同时清理这条对话新写入的日志和事实，不影响其他对话。</p><div id="chat-history" class="chat-history"></div></dialog>
   <div id="toast" role="status"></div>
-  <script src="/assets/app.js?v=0.5.0"></script>
+  <script src="/assets/app.js?v=0.6.0"></script>
 </body>
 </html>

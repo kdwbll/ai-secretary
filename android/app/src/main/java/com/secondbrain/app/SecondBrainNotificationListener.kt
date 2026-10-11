@@ -8,7 +8,9 @@ class SecondBrainNotificationListener : NotificationListenerService() {
         val extras = sbn.notification.extras
         val title = extras.getCharSequence("android.title")?.toString() ?: ""
         val text = extras.getCharSequence("android.text")?.toString() ?: return
-        val server = getSharedPreferences("second_brain", MODE_PRIVATE).getString("server", null) ?: return
-        SyncWorker.enqueueNotification(this, server, sbn.packageName, title, text)
+        val preferences = getSharedPreferences("second_brain", MODE_PRIVATE)
+        val server = preferences.getString("server", null) ?: return
+        val token = preferences.getString("access_token", null) ?: return
+        SyncWorker.enqueueNotification(this, server, token, sbn.packageName, title, text)
     }
 }

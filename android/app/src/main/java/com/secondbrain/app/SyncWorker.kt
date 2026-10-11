@@ -10,6 +10,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
         val server = inputData.getString("server") ?: return Result.failure()
+        val token = inputData.getString("token") ?: return Result.failure()
         val kind = inputData.getString("kind") ?: "chat"
         val message = escape(inputData.getString("message") ?: return Result.success())
         val endpoint: String
@@ -21,8 +22,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
         }
         val body = json.toRequestBody("application/json".toMediaType())
         return try {
-            OkHttpClient().newCall(Request.Builder().url("$server$endpoint").post(body).build()).execute().use { response ->
-                if (response.isSuccessful) Result.success() else Result.retry()
+            OkHttpClient().newCall(Request.Builder().url("$server$endpoint").header("Authorization", "Bearer $token").post(body).build()).execute().use { response ->
+                if (response.isSuccessful) Result.success() else if (response.code == 401) Result.failure() else Result.retry()
             }
         } catch (_: Exception) {
             Result.retry()
@@ -38,8 +39,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
             WorkManager.getInstance(context).enqueue(request)
         }
 
-        fun enqueueChat(context: Context, server: String, message: String) = enqueue(context, workDataOf("kind" to "chat", "server" to server, "message" to message))
-        fun enqueueSms(context: Context, server: String, sender: String, message: String) = enqueue(context, workDataOf("kind" to "sms", "server" to server, "sender" to sender, "message" to message))
-        fun enqueueNotification(context: Context, server: String, packageName: String, title: String, text: String) = enqueue(context, workDataOf("kind" to "notification", "server" to server, "package" to packageName, "title" to title, "message" to text))
+        fun enqueueChat(context: Context, server: String, token: String, message: String) = enqueue(context, workDataOf("kind" to "chat", "server" to server, "token" to token, "message" to message))
+        fun enqueueSms(context: Context, server: String, token: String, sender: String, message: String) = enqueue(context, workDataOf("kind" to "sms", "server" to server, "token" to token, "sender" to sender, "message" to message))
+        fun enqueueNotification(context: Context, server: String, token: String, packageName: String, title: String, text: String) = enqueue(context, workDataOf("kind" to "notification", "server" to server, "token" to token, "package" to packageName, "title" to title, "message" to text))
     }
 }

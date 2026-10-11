@@ -11,12 +11,13 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .database import Database
+from .auth import AccessControl
 from .connectors import ImapConnector
 from .files import FilePipeline
 from .health import HealthService
@@ -27,8 +28,9 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 DB = Database(ROOT / "data" / "second-brain.db")
+ACCESS = AccessControl(DB)
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
 SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts")
@@ -102,6 +104,11 @@ class EmailAccountInput(BaseModel):
     enabled: bool = True
 
 
+class PairInput(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+    device_name: str = Field(default="未命名设备", max_length=80)
+
+
 def sync_email_accounts() -> dict:
     accounts = DB.rows("SELECT * FROM email_accounts WHERE enabled=1 ORDER BY id")
     result = {"accounts": [], "messages": 0}
@@ -149,10 +156,82 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="第二大脑", version=APP_VERSION, lifespan=lifespan)
 
+PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/pair"}
+
+
+def request_token(request: Request) -> Optional[str]:
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return request.headers.get("x-second-brain-token") or request.cookies.get("second_brain_token")
+
+
+@app.middleware("http")
+async def protect_personal_api(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in PUBLIC_API_PATHS:
+        return await call_next(request)
+    if ACCESS.is_loopback(request.client.host if request.client else None):
+        return await call_next(request)
+    if not ACCESS.verify(request_token(request)):
+        return JSONResponse(
+            {"detail": "此设备尚未配对，请先在电脑设置页生成配对码"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
+
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "version": APP_VERSION}
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    local = ACCESS.is_loopback(request.client.host if request.client else None)
+    authenticated = local or ACCESS.verify(request_token(request))
+    return {"authenticated": authenticated, "local": local, "requires_pairing": not authenticated}
+
+
+@app.post("/api/auth/pair")
+def auth_pair(body: PairInput):
+    try:
+        result = ACCESS.pair(body.code, body.device_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    response = JSONResponse(result)
+    response.set_cookie(
+        "second_brain_token",
+        result["token"],
+        httponly=True,
+        samesite="strict",
+        max_age=60 * 60 * 24 * 365,
+    )
+    return response
+
+
+@app.post("/api/auth/pairing-code")
+def auth_pairing_code(request: Request):
+    if not ACCESS.is_loopback(request.client.host if request.client else None):
+        raise HTTPException(403, "只能在电脑本机生成配对码")
+    return ACCESS.create_pairing_code()
+
+
+@app.get("/api/auth/devices")
+def auth_devices(request: Request):
+    if not ACCESS.is_loopback(request.client.host if request.client else None):
+        raise HTTPException(403, "只能在电脑本机管理设备")
+    return {"devices": ACCESS.devices()}
+
+
+@app.delete("/api/auth/devices/{token_id}")
+def auth_device_revoke(token_id: int, request: Request):
+    if not ACCESS.is_loopback(request.client.host if request.client else None):
+        raise HTTPException(403, "只能在电脑本机管理设备")
+    if not ACCESS.revoke(token_id):
+        raise HTTPException(404, "设备不存在或已撤销")
+    return {"ok": True}
 
 
 @app.post("/api/chat")
