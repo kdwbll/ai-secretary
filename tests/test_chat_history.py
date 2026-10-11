@@ -118,6 +118,28 @@ class ChatHistoryTests(TestCase):
             self.assertEqual(photo["hash"], "photo-hash")
             self.assertEqual(photo["kind"], "image")
 
+    def test_analyzing_current_image_does_not_return_history_images(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            with service.database.connect() as db:
+                db.execute(
+                    "INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)",
+                    ("old-photo", "旧照片.jpg", "files/2026-10/old.jpg", "2026-10-10T12:00:00", "一张旧照片"),
+                )
+                db.execute(
+                    "INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)",
+                    ("current-photo", "刚上传.jpg", "files/2026-10/current.jpg", "2026-10-11T12:00:00", "本轮图片"),
+                )
+            result = service.chat("分析一下这个图片", file_hashes=["current-photo"])
+            self.assertEqual(result["attachments"]["assistant_files"], [])
+            self.assertEqual(result["attachments"]["user_files"][0]["hash"], "current-photo")
+            with service.database.connect() as db:
+                db.execute(
+                    "UPDATE chat_messages SET attachments=? WHERE id=?",
+                    ('{"assistant_files":[{"hash":"old-photo"}]}', result["id"]),
+                )
+            self.assertEqual(service.chat_history()[0]["attachments"]["assistant_files"], [])
+
     def test_apple_account_question_gets_official_link(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))

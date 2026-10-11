@@ -124,8 +124,17 @@ class SecretaryService:
             "summary": (row.get("extracted_text") or "")[:240],
         }
 
-    def _related_images(self, message: str, exclude: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    @staticmethod
+    def _wants_history_images(message: str) -> bool:
         if not any(word in message for word in ("照片", "图片", "相片", "相册", "拍的", "拍过")):
+            return False
+        return any(
+            word in message
+            for word in ("之前", "以前", "历史", "上传过", "最近上传", "上次", "去年", "当时", "那次", "找回")
+        )
+
+    def _related_images(self, message: str, exclude: Optional[list[str]] = None) -> list[dict[str, Any]]:
+        if not self._wants_history_images(message):
             return []
         excluded = set(exclude or [])
         terms = {
@@ -255,6 +264,8 @@ class SecretaryService:
         for row in rows:
             row["sources"] = json.loads(row["sources"] or "[]")
             row["attachments"] = json.loads(row["attachments"] or "{}")
+            if not self._wants_history_images(row["user_message"]):
+                row["attachments"]["assistant_files"] = []
         return rows
 
     def delete_chat(self, chat_id: int, delete_memory: bool = False) -> dict[str, Any]:
