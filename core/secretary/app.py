@@ -28,7 +28,7 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
@@ -109,17 +109,43 @@ class PairInput(BaseModel):
     device_name: str = Field(default="未命名设备", max_length=80)
 
 
-def sync_email_accounts() -> dict:
+def sync_email_accounts(refresh: bool = False) -> dict:
     accounts = DB.rows("SELECT * FROM email_accounts WHERE enabled=1 ORDER BY id")
-    result = {"accounts": [], "messages": 0}
+    result = {"accounts": [], "messages": 0, "attachments": 0}
     for account in accounts:
         item = {"name": account["name"], "username": account["username"], "ok": False, "count": 0}
         try:
             connector = ImapConnector(account["host"], account["username"], account["authorization_code"], account["port"])
-            for message in connector.unread(20):
-                if DB.rows("SELECT 1 FROM email_seen WHERE account_id=? AND message_uid=?", (account["id"], message["uid"])):
+            messages = connector.recent(20) if refresh else connector.unread(20)
+            for message in messages:
+                if not refresh and DB.rows("SELECT 1 FROM email_seen WHERE account_id=? AND message_uid=?", (account["id"], message["uid"])):
                     continue
-                SERVICE.ingest_email(message["subject"], message["from"], message["body"])
+                attachment_records = []
+                for attachment in message.get("attachments", []):
+                    if attachment.get("skipped"):
+                        attachment_records.append({"name": attachment["name"], "skipped": True, "reason": "附件超过读取大小限制"})
+                        continue
+                    suffix = (Path(attachment["name"]).suffix or mimetypes.guess_extension(attachment.get("content_type", "")) or "")[:16]
+                    original_name = attachment["name"] + suffix if not Path(attachment["name"]).suffix and suffix else attachment["name"]
+                    temp_path = None
+                    try:
+                        with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+                            temp.write(attachment["data"])
+                            temp_path = Path(temp.name)
+                        stored = FILES.ingest(temp_path, original_name)
+                        attachment_records.append({
+                            "hash": stored["hash"],
+                            "name": stored["original_name"],
+                            "summary": (stored.get("extracted_text") or "")[:1000],
+                            "url": f"/api/files/{stored['hash']}/content",
+                        })
+                        result["attachments"] += 1
+                    except Exception as exc:
+                        attachment_records.append({"name": attachment["name"], "skipped": True, "reason": str(exc)[:200]})
+                    finally:
+                        if temp_path:
+                            temp_path.unlink(missing_ok=True)
+                SERVICE.ingest_email(message["subject"], message["from"], message["body"], attachment_records, message["uid"])
                 with DB.connect() as db:
                     db.execute("INSERT OR IGNORE INTO email_seen(account_id,message_uid,processed_at) VALUES(?,?,datetime('now','localtime'))", (account["id"], message["uid"]))
                 item["count"] += 1
@@ -369,8 +395,8 @@ def email_account_save(body: EmailAccountInput):
 
 
 @app.post("/api/email/sync")
-def email_sync():
-    return sync_email_accounts()
+def email_sync(refresh: bool = False):
+    return sync_email_accounts(refresh)
 
 
 @app.post("/api/routes")

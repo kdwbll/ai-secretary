@@ -2,8 +2,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import subprocess
 import unittest
+from email.message import EmailMessage
 from unittest.mock import Mock
 from unittest.mock import patch
+import zipfile
 
 from PIL import Image
 from core.secretary.database import Database
@@ -13,6 +15,31 @@ from core.secretary.storage import LocalStorage
 
 
 class MediaTests(unittest.TestCase):
+    def _pipeline(self, root: Path):
+        database = Database(root / "data.db")
+        memory = MemoryEngine(LocalStorage(root / "memory"), database)
+        memory.initialize()
+        return FilePipeline(root / "files", database, memory, Mock())
+
+    def test_html_eml_and_pptx_text_are_supported(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            pipeline = self._pipeline(root)
+            html = root / "notice.html"
+            html.write_text("<h1>报名通知</h1><p>截止时间 18:00</p>", encoding="utf-8")
+            self.assertIn("截止时间 18:00", pipeline.extract(html))
+
+            eml = root / "notice.eml"
+            message = EmailMessage()
+            message["Subject"] = "会议"
+            message.set_content("会议室改为 302。")
+            eml.write_bytes(message.as_bytes())
+            self.assertIn("会议室改为 302", pipeline.extract(eml))
+
+            slides = root / "slides.pptx"
+            with zipfile.ZipFile(slides, "w") as archive:
+                archive.writestr("ppt/slides/slide1.xml", "<root><p>项目里程碑</p><p>十月完成</p></root>")
+            self.assertIn("项目里程碑", pipeline.extract(slides))
     def test_legacy_doc_uses_system_text_extractor(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

@@ -290,7 +290,7 @@ private fun TokenActivityCard(usage: TokenActivity?) {
             else -> days.takeLast(90)
         }
     }
-    val max = points.maxOfOrNull { it.tokens } ?: 0L
+    val positiveLevels = remember(points) { points.map { it.tokens }.filter { it > 0 }.distinct().sorted() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -305,7 +305,7 @@ private fun TokenActivityCard(usage: TokenActivity?) {
             if (usage == null) Text("连接电脑后显示用量", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             else LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
                 items(points) { point ->
-                    val strength = if (point.tokens == 0L || max == 0L) 0 else ((point.tokens.toDouble() / max * 3).toInt() + 1).coerceIn(1, 4)
+                    val strength = tokenActivityLevel(point.tokens, positiveLevels)
                     val color = listOf(Color(0xFFEBECE9), Color(0xFFCDE2D6), Color(0xFF8EBCA3), Color(0xFF4D8B6C), Color(0xFF1F6044))[strength]
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Box(Modifier.size(if (mode == "每天") 13.dp else 22.dp).background(color, RoundedCornerShape(3.dp)))
@@ -315,5 +315,19 @@ private fun TokenActivityCard(usage: TokenActivity?) {
             }
             Text("颜色越深，用量越高；费用按电脑端配置的模型价格估算。", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
+    }
+}
+
+private fun tokenActivityLevel(value: Long, positiveLevels: List<Long>): Int {
+    if (value <= 0 || positiveLevels.isEmpty()) return 0
+    if (positiveLevels.size == 1) return 2
+    if (positiveLevels.size == 2) return if (value <= positiveLevels.first()) 2 else 3
+    if (positiveLevels.size == 3) return positiveLevels.indexOfFirst { it >= value }.coerceAtLeast(0) + 1
+    val rank = positiveLevels.indexOfFirst { it >= value }.coerceAtLeast(0).toDouble() / (positiveLevels.size - 1)
+    return when {
+        rank < 0.25 -> 1
+        rank < 0.5 -> 2
+        rank < 0.75 -> 3
+        else -> 4
     }
 }

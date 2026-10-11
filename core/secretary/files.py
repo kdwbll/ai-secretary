@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
+from xml.etree import ElementTree
 from datetime import date, datetime
 from pathlib import Path
 
@@ -16,7 +18,11 @@ from .models import ModelRouter
 class FilePipeline:
     IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif"}
     VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
-    DOCUMENT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log", ".pdf", ".doc", ".docx", ".xlsx", ".xlsm", ".zip"}
+    DOCUMENT_SUFFIXES = {
+        ".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".xml", ".html", ".htm",
+        ".ics", ".vcf", ".rtf", ".eml", ".pdf", ".doc", ".docx", ".xlsx", ".xlsm",
+        ".pptx", ".ods", ".zip",
+    }
     RETRY_MARKERS = ("请先在设置中配置", "模型分析失败", "关键帧分析失败", "解析失败", "解析组件未安装")
 
     def __init__(self, files_root: Path, database: Database, memory: MemoryEngine, models: ModelRouter):
@@ -80,8 +86,29 @@ class FilePipeline:
 
     def extract(self, path: Path) -> str:
         suffix = path.suffix.lower()
-        if suffix in {".txt", ".md", ".csv", ".json", ".log"}:
-            return path.read_text(encoding="utf-8", errors="replace")[:200000]
+        if suffix in {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".ics", ".vcf"}:
+            return self._read_text(path)[:200000]
+        if suffix in {".html", ".htm"}:
+            from .connectors import html_to_text
+            return html_to_text(self._read_text(path))[:200000]
+        if suffix == ".xml":
+            try:
+                return "\n".join(text.strip() for text in ElementTree.parse(path).getroot().itertext() if text.strip())[:200000]
+            except ElementTree.ParseError:
+                return self._read_text(path)[:200000]
+        if suffix == ".rtf":
+            text = self._read_text(path)
+            text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
+            text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
+            return re.sub(r"[{}]", "", text)[:200000]
+        if suffix == ".eml":
+            from .connectors import parse_message
+            message = parse_message(path.read_bytes())
+            names = "、".join(item["name"] for item in message["attachments"])
+            return (
+                f"主题：{message['subject']}\n发件人：{message['from']}\n日期：{message['date']}\n\n{message['body']}"
+                + (f"\n\n附件：{names}" if names else "")
+            )[:200000]
         if suffix == ".pdf":
             try:
                 from pypdf import PdfReader
@@ -103,6 +130,10 @@ class FilePipeline:
                 return "\n".join(",".join("" if v is None else str(v) for v in row) for sheet in book for row in sheet.iter_rows(values_only=True))[:200000]
             except ImportError:
                 return "Excel 解析组件未安装，请安装 documents 可选依赖"
+        if suffix == ".pptx":
+            return self._archive_xml_text(path, "ppt/slides/slide")
+        if suffix == ".ods":
+            return self._archive_xml_text(path, "content.xml")
         if suffix == ".zip":
             with zipfile.ZipFile(path) as archive:
                 names = [name for name in archive.namelist() if not name.startswith("__MACOSX/")]
@@ -127,6 +158,31 @@ class FilePipeline:
             except Exception as exc:
                 return f"视频已归档，但关键帧分析失败：{exc}"
         return ""
+
+    @staticmethod
+    def _read_text(path: Path) -> str:
+        raw = path.read_bytes()
+        for encoding in ("utf-8-sig", "gb18030", "utf-16"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _archive_xml_text(path: Path, member_prefix: str) -> str:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = sorted(name for name in archive.namelist() if name.startswith(member_prefix) and name.endswith(".xml"))
+                sections = []
+                for name in names:
+                    root = ElementTree.fromstring(archive.read(name))
+                    text = " ".join(value.strip() for value in root.itertext() if value.strip())
+                    if text:
+                        sections.append(text)
+            return "\n".join(sections)[:200000]
+        except (zipfile.BadZipFile, ElementTree.ParseError, KeyError) as exc:
+            return f"文档解析失败：{exc}"
 
     @staticmethod
     def _legacy_word_text(path: Path) -> str:
