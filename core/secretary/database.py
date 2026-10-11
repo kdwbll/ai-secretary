@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 
 SCHEMA = """
@@ -66,24 +67,89 @@ CREATE TABLE IF NOT EXISTS health_samples (
   external_id TEXT UNIQUE
 );
 CREATE INDEX IF NOT EXISTS idx_health_metric_time ON health_samples(metric, recorded_at);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+);
 """
+
+
+@dataclass(frozen=True)
+class Migration:
+    version: int
+    name: str
+    apply: Callable[[sqlite3.Connection], None]
+
+
+def _columns(db: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_provider_consumption_level(db: sqlite3.Connection) -> None:
+    if "consumption_level" not in _columns(db, "providers"):
+        db.execute("ALTER TABLE providers ADD COLUMN consumption_level TEXT NOT NULL DEFAULT 'medium'")
+
+
+def _add_chat_attachments(db: sqlite3.Connection) -> None:
+    if "attachments" not in _columns(db, "chat_messages"):
+        db.execute("ALTER TABLE chat_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '{}'")
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "add provider consumption level", _add_provider_consumption_level),
+    Migration(2, "add chat attachments", _add_chat_attachments),
+)
+LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
 
 class Database:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as db:
+        with sqlite3.connect(str(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            current = int(db.execute("PRAGMA user_version").fetchone()[0])
+            if current > LATEST_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"数据库版本 {current} 高于当前程序支持的版本 {LATEST_SCHEMA_VERSION}，请升级程序"
+                )
             db.executescript(SCHEMA)
-            provider_columns = {row[1] for row in db.execute("PRAGMA table_info(providers)")}
-            if "consumption_level" not in provider_columns:
-                db.execute("ALTER TABLE providers ADD COLUMN consumption_level TEXT NOT NULL DEFAULT 'medium'")
-            chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_messages)")}
-            if "attachments" not in chat_columns:
-                db.execute("ALTER TABLE chat_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '{}'")
+            self._run_migrations(db)
             defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5", "usd_cny_rate": "7.20"}
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))
+
+    @staticmethod
+    def _run_migrations(db: sqlite3.Connection, migrations: Sequence[Migration] = MIGRATIONS) -> None:
+        versions = [migration.version for migration in migrations]
+        if versions != list(range(1, len(versions) + 1)):
+            raise RuntimeError("数据库迁移版本必须从 1 开始连续递增")
+        current = int(db.execute("PRAGMA user_version").fetchone()[0])
+        latest = versions[-1] if versions else 0
+        if current > latest:
+            raise RuntimeError(f"数据库版本 {current} 高于当前程序支持的版本 {latest}，请升级程序")
+        for migration in migrations:
+            if migration.version <= current:
+                continue
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                migration.apply(db)
+                db.execute(
+                    "INSERT OR REPLACE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+                    (migration.version, migration.name, datetime.now().astimezone().isoformat(timespec="seconds")),
+                )
+                db.execute(f"PRAGMA user_version={migration.version}")
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                raise RuntimeError(f"数据库迁移 {migration.version}（{migration.name}）失败，已回滚") from exc
+
+        required = {
+            "providers": {"consumption_level"},
+            "chat_messages": {"attachments"},
+        }
+        missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
+        if missing:
+            raise RuntimeError("数据库结构校验失败，缺少字段：" + "、".join(missing))
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -92,6 +158,9 @@ class Database:
         try:
             yield db
             db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
