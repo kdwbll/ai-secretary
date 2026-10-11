@@ -80,7 +80,7 @@ class SecretStore:
                 encrypted = self.encrypt(row["authorization_code"])
                 if encrypted != row["authorization_code"]:
                     db.execute("UPDATE email_accounts SET authorization_code=? WHERE id=?", (encrypted, row["id"]))
-            for key in ("map_api_key", "map_security_code", "map_web_service_key"):
+            for key in ("map_api_key", "map_security_code", "map_web_service_key", "web_search_api_key"):
                 row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
                 if row and row["value"]:
                     db.execute("UPDATE settings SET value=? WHERE key=?", (self.encrypt(row["value"]), key))
