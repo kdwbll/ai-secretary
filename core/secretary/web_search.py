@@ -69,7 +69,7 @@ class WebSearchService:
                 "Accept": "application/json",
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "SecondBrain/0.7.5",
+                "User-Agent": "SecondBrain/0.7.7",
             },
             method="POST",
         )
@@ -98,7 +98,7 @@ class WebSearchService:
             "q": query[:600], "format": "json", "language": "zh-CN", "safesearch": 1,
             "categories": "news" if category == "news" else "general",
         }
-        request = Request(endpoint + "?" + urlencode(params), headers={"Accept": "application/json", "User-Agent": "SecondBrain/0.7.5"})
+        request = Request(endpoint + "?" + urlencode(params), headers={"Accept": "application/json", "User-Agent": "SecondBrain/0.7.7"})
         with urlopen(request, timeout=8) as response:
             payload = json.loads(response.read(2_000_000).decode("utf-8"))
         return SearchOutcome(results=self._normalize(payload.get("results") or [], limit), provider="searxng")

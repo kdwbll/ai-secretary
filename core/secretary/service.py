@@ -152,6 +152,10 @@ class SecretaryService:
         return [{"title": item["title"], "url": item["url"], "source": source} for item in outcome.results]
 
     @staticmethod
+    def _model_failure_message(error: Exception) -> str:
+        return str(getattr(error, "user_message", "模型处理失败，请检查网络和模型设置后重试"))
+
+    @staticmethod
     def _time_context(now: Optional[datetime] = None) -> str:
         current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
         weekdays = "一二三四五六日"
@@ -480,7 +484,13 @@ class SecretaryService:
             self._finish_chat(chat_id, answer, [], attachments)
             return {"id": chat_id, "answer": answer, "sources": [], "attachments": attachments}
         system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
-        answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
+        try:
+            answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
+        except Exception as exc:
+            failure = self._model_failure_message(exc)
+            attachments["warnings"].append(failure)
+            self._finish_chat(chat_id, failure, paths, attachments)
+            raise
         if not isinstance(answer, str) or not answer.strip():
             answer = self._local_answer(message, context, paths)
         answer, links = self._enrich_answer(message, answer)
@@ -528,10 +538,14 @@ class SecretaryService:
             self._persist_chat_memory(message, answer, chat_id, attachments)
             self._finish_chat(chat_id, answer, paths, attachments)
             yield {"event": "done", "data": {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}}
-        except Exception:
+        except Exception as exc:
             partial = "".join(answer_parts).strip()
             if partial:
                 self._finish_chat(chat_id, partial, paths, attachments)
+            else:
+                failure = self._model_failure_message(exc)
+                attachments["warnings"].append(failure)
+                self._finish_chat(chat_id, failure, paths, attachments)
             raise
 
     def _persist_chat_memory(self, message: str, answer: str, chat_id: int, attachments: dict[str, Any]) -> None:

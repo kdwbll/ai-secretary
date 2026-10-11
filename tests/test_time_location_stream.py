@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from core.secretary.database import Database
 from core.secretary.memory import MemoryEngine
+from core.secretary.models import ModelNetworkError
 from core.secretary.secrets import SecretStore
 from core.secretary.service import SecretaryService
 from core.secretary.storage import LocalStorage
@@ -58,6 +59,18 @@ class TimeLocationStreamTests(TestCase):
             self.assertEqual(events[-1]["data"]["answer"], "今天是周日。")
             history = service.chat_history(query="今天周几")
             self.assertEqual(history[0]["title"], "今天周几")
+
+    def test_stream_failure_is_persisted_instead_of_staying_unfinished(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.models.stream_complete.side_effect = ModelNetworkError("offline")
+
+            with self.assertRaises(ModelNetworkError):
+                list(service.chat_stream("在吗"))
+
+            history = service.chat_history()
+            self.assertEqual(history[0]["assistant_message"], ModelNetworkError.user_message)
+            self.assertEqual(history[0]["attachments"]["warnings"], [ModelNetworkError.user_message])
 
     def test_secret_store_encrypts_and_authenticates_values(self):
         with TemporaryDirectory() as directory:

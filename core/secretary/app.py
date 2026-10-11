@@ -30,7 +30,7 @@ from .secrets import SecretStore
 from .web_search import WebSearchService
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.7.5"
+APP_VERSION = "0.7.7"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
