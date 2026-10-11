@@ -7,6 +7,8 @@ data/*.db
 data/*.db-*
 data/*.log
 data/*.pid
+data/.secrets-key
+data/.browser-token
 data/recovery/
 config.json
 files/*

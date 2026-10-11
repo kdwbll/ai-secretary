@@ -15,7 +15,7 @@ class AccessControlTests(TestCase):
             result = access.pair(code, "Redmi Turbo 4 Pro")
 
             self.assertTrue(access.verify(result["token"]))
-            stored = database.rows("SELECT name,token_hash,last_used_at FROM access_tokens")[0]
+            stored = database.rows("SELECT name,token_hash,last_used_at FROM access_tokens WHERE name=?", ("Redmi Turbo 4 Pro",))[0]
             self.assertEqual(stored["name"], "Redmi Turbo 4 Pro")
             self.assertNotEqual(stored["token_hash"], result["token"])
             self.assertNotIn(result["token"], str(stored))

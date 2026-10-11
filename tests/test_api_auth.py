@@ -19,7 +19,9 @@ class ApiAuthenticationTests(TestCase):
                 remote = TestClient(app_module.app, client=("192.168.1.50", 50001))
 
                 self.assertEqual(remote.get("/api/chats?limit=1").status_code, 401)
-                code = local.post("/api/auth/pairing-code").json()["code"]
+                local_token = local.get("/api/auth/local-token").json()["token"]
+                local_headers = {"Authorization": f"Bearer {local_token}"}
+                code = local.post("/api/auth/pairing-code", headers=local_headers).json()["code"]
                 paired = remote.post(
                     "/api/auth/pair",
                     json={"code": code, "device_name": "test phone"},
@@ -30,7 +32,7 @@ class ApiAuthenticationTests(TestCase):
                 self.assertEqual(remote.get("/api/chats?limit=1", headers=headers).status_code, 200)
 
                 token_id = paired.json()["id"]
-                self.assertEqual(local.delete(f"/api/auth/devices/{token_id}").status_code, 200)
+                self.assertEqual(local.delete(f"/api/auth/devices/{token_id}", headers=local_headers).status_code, 200)
                 self.assertEqual(remote.get("/api/chats?limit=1", headers=headers).status_code, 401)
             finally:
                 app_module.ACCESS = original_access

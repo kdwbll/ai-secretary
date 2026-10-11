@@ -9,8 +9,9 @@ from .memory import MemoryEngine
 
 
 class ReportService:
-    def __init__(self, memory: MemoryEngine, database: Database):
+    def __init__(self, memory: MemoryEngine, database: Database, notify=None):
         self.memory, self.database = memory, database
+        self.notify = notify
 
     def morning(self) -> str:
         daily = self.memory.ensure_daily()
@@ -65,3 +66,6 @@ class ReportService:
     def _save(self, kind: str, content: str) -> None:
         with self.database.connect() as db:
             db.execute("INSERT INTO reports(created_at,kind,content) VALUES(?,?,?)", (datetime.now().isoformat(timespec="seconds"), kind, content))
+        if self.notify:
+            titles = {"morning": "第二大脑早报", "evening": "今晚复盘", "weekly": "每周整理"}
+            self.notify(kind, titles.get(kind, "第二大脑"), content)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
+import os
 import secrets
 import threading
 from dataclasses import dataclass
@@ -27,11 +29,49 @@ class AccessControl:
         self._pairing: Optional[PairingCode] = None
         self._last_seen_updates: dict[int, datetime] = {}
         self._lock = threading.Lock()
+        self._browser_token = self._load_or_create_browser_token()
+
+    def _load_or_create_browser_token(self) -> str:
+        path = self.database.path.parent / ".browser-token"
+        if path.exists():
+            token = path.read_text(encoding="utf-8").strip()
+        else:
+            token = "sb_" + secrets.token_urlsafe(32)
+            descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(descriptor, token.encode("utf-8"))
+            finally:
+                os.close(descriptor)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        digest = self.token_hash(token)
+        with self.database.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO access_tokens(name,token_hash,created_at) VALUES(?,?,?)",
+                ("本机浏览器", digest, datetime.now().astimezone().isoformat(timespec="seconds")),
+            )
+        return token
+
+    def browser_token(self) -> str:
+        return self._browser_token
 
     @staticmethod
     def is_loopback(host: Optional[str]) -> bool:
         normalized = (host or "").split("%", 1)[0]
         return normalized in {"127.0.0.1", "::1", "localhost"}
+
+    @staticmethod
+    def is_trusted_network(host: Optional[str]) -> bool:
+        normalized = (host or "").split("%", 1)[0]
+        if normalized == "localhost":
+            return True
+        try:
+            address = ipaddress.ip_address(normalized)
+            return address.is_loopback or address.is_private or address.is_link_local
+        except ValueError:
+            return False
 
     @staticmethod
     def token_hash(token: str) -> str:

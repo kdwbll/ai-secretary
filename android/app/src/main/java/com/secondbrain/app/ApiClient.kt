@@ -21,6 +21,7 @@ data class UploadReceipt(val name: String, val summary: String)
 data class RemoteFile(val hash: String, val name: String, val createdAt: String, val summary: String)
 data class TokenDay(val date: String, val tokens: Long, val cost: Double)
 data class TokenActivity(val totalTokens: Long, val totalCost: Double, val days: List<TokenDay>)
+data class RemoteNotification(val id: Long, val title: String, val body: String)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -70,6 +71,29 @@ object ApiClient {
         client.newCall(request(server, "/api/chat", token).post(body).build()).execute().use { response ->
             if (!response.isSuccessful) error("发送失败（${response.code}）")
             JSONObject(response.body?.string().orEmpty()).optString("answer", "已发送")
+        }
+    }
+
+    suspend fun reportLocation(server: String, token: String, latitude: Double, longitude: Double) = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("source", "android").put("latitude", latitude).put("longitude", longitude)
+            .put("label", "Android 伴侣主动上报").put("enabled", true)
+            .toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/location/report", token).post(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("位置上报失败（${response.code}）")
+        }
+    }
+
+    suspend fun notifications(server: String, token: String, afterId: Long): List<RemoteNotification> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/notifications?after_id=$afterId", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取提醒失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("notifications")
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    add(RemoteNotification(item.getLong("id"), item.optString("title"), item.optString("body")))
+                }
+            }
         }
     }
 

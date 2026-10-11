@@ -61,7 +61,9 @@ class RouterTests(unittest.TestCase):
             router.save_provider("cloud", "https://two/v1", "", ["b"])
             with database.connect() as db:
                 secret = db.execute("SELECT api_key FROM providers WHERE name='cloud'").fetchone()[0]
-            self.assertEqual(secret, "kept-secret")
+            self.assertNotEqual(secret, "kept-secret")
+            self.assertTrue(secret.startswith("enc:v1:"))
+            self.assertEqual(router.secrets.decrypt(secret), "kept-secret")
 
     def test_delete_provider_clears_routes_but_keeps_other_providers(self):
         with TemporaryDirectory() as temp:

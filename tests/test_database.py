@@ -15,7 +15,7 @@ class DatabaseMigrationTests(TestCase):
                 history = db.execute("SELECT version,name FROM schema_migrations ORDER BY version").fetchall()
 
             self.assertEqual(version, LATEST_SCHEMA_VERSION)
-            self.assertEqual([row[0] for row in history], [1, 2, 3])
+            self.assertEqual([row[0] for row in history], list(range(1, LATEST_SCHEMA_VERSION + 1)))
 
     def test_legacy_database_upgrades_without_losing_data(self):
         with TemporaryDirectory() as directory:

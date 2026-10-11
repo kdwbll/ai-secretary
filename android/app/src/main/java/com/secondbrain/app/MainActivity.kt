@@ -61,6 +61,16 @@ fun SecondBrainApp(intent: Intent?) {
     var uploading by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<RemoteFile?>(null) }
     val scope = rememberCoroutineScope()
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants.values.any { it }) scope.launch {
+            notice = "正在获取一次当前位置…"
+            val location = runCatching { LocationReporter.current(context) }.getOrNull()
+            if (location == null) notice = "没有获取到位置，请打开手机定位后重试"
+            else runCatching { ApiClient.reportLocation(server, token, location.latitude, location.longitude) }
+                .onSuccess { notice = "位置已安全上报；只会用于位置相关问题" }
+                .onFailure { notice = "位置上报失败：${it.message}" }
+        } else notice = "未授予位置权限，没有读取位置"
+    }
 
     suspend fun refresh() {
         connected = ApiClient.health(server, token)
@@ -70,6 +80,12 @@ fun SecondBrainApp(intent: Intent?) {
             runCatching { events = ApiClient.events(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
+            runCatching {
+                val lastId = preferences.getLong("last_notification_id", 0)
+                val incoming = ApiClient.notifications(server, token, lastId)
+                if (lastId > 0) incoming.forEach { AndroidNotifications.show(context, it) }
+                incoming.maxOfOrNull { it.id }?.let { preferences.edit().putLong("last_notification_id", it).apply() }
+            }
         } else notice = if (token.isBlank()) "尚未配对 · 请在电脑设置页生成配对码" else "未连接或授权已撤销 · 请检查地址后重新配对"
     }
 
@@ -173,7 +189,9 @@ fun SecondBrainApp(intent: Intent?) {
                             }
                             refresh()
                         }
-                    }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+                    }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, onLocation = {
+                        locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    })
                 }
             }
         }
@@ -253,7 +271,7 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -268,6 +286,8 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         HorizontalDivider()
+        OutlinedButton(onClick = onLocation, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("上报一次当前位置") }
+        Text("不会后台持续定位；只有点击这个按钮时才读取并上报 GPS。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }

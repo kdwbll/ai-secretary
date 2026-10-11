@@ -59,7 +59,17 @@ CREATE TABLE IF NOT EXISTS email_seen (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, user_message TEXT NOT NULL,
   assistant_message TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '[]',
-  provider TEXT, model TEXT, attachments TEXT NOT NULL DEFAULT '{}'
+  provider TEXT, model TEXT, attachments TEXT NOT NULL DEFAULT '{}', title TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at);
+CREATE TABLE IF NOT EXISTS locations (
+  id INTEGER PRIMARY KEY, source TEXT UNIQUE NOT NULL, label TEXT NOT NULL DEFAULT '',
+  latitude REAL, longitude REAL, enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL,
+  title TEXT NOT NULL, body TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS health_samples (
   id INTEGER PRIMARY KEY, recorded_at TEXT NOT NULL, metric TEXT NOT NULL,
@@ -106,10 +116,36 @@ def _add_access_tokens(db: sqlite3.Connection) -> None:
     )
 
 
+def _add_chat_titles(db: sqlite3.Connection) -> None:
+    if "title" not in _columns(db, "chat_messages"):
+        db.execute("ALTER TABLE chat_messages ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+    db.execute("UPDATE chat_messages SET title=substr(trim(user_message),1,40) WHERE title='' OR title IS NULL")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at)")
+
+
+def _add_locations(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS locations ("
+        "id INTEGER PRIMARY KEY, source TEXT UNIQUE NOT NULL, label TEXT NOT NULL DEFAULT '', "
+        "latitude REAL, longitude REAL, enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+    )
+
+
+def _add_notifications(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS notifications ("
+        "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL, "
+        "title TEXT NOT NULL, body TEXT NOT NULL)"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
     Migration(3, "add device access tokens", _add_access_tokens),
+    Migration(4, "add chat titles and search", _add_chat_titles),
+    Migration(5, "add local location sources", _add_locations),
+    Migration(6, "add local notification outbox", _add_notifications),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -127,7 +163,11 @@ class Database:
                 )
             db.executescript(SCHEMA)
             self._run_migrations(db)
-            defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5", "usd_cny_rate": "7.20"}
+            defaults = {
+                "morning_time": "07:30", "review_time": "22:30", "max_context_files": "5",
+                "usd_cny_rate": "7.20", "location_enabled": "0", "map_provider": "amap",
+                "notifications_enabled": "0", "theme": "system",
+            }
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))
 
@@ -160,6 +200,9 @@ class Database:
             "providers": {"consumption_level"},
             "chat_messages": {"attachments"},
             "access_tokens": {"name", "token_hash", "revoked_at"},
+            "chat_messages": {"attachments", "title"},
+            "locations": {"source", "latitude", "longitude", "enabled"},
+            "notifications": {"kind", "title", "body"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:

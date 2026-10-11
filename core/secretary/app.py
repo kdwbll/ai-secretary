@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,20 +22,25 @@ from .connectors import ImapConnector
 from .files import FilePipeline
 from .health import HealthService
 from .memory import MemoryDocument, MemoryEngine
-from .models import ModelRouter, PROVIDER_TEMPLATES, Route
+from .models import ModelError, ModelRouter, PROVIDER_TEMPLATES, Route
 from .reports import ReportService
+from .notifications import NotificationService
 from .service import SecretaryService
 from .storage import LocalStorage
+from .secrets import SecretStore
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.7.0"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
+SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
+SECRETS.migrate_database(DB)
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
-MODELS = ModelRouter(DB)
-SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts")
+MODELS = ModelRouter(DB, SECRETS)
+NOTIFICATIONS = NotificationService(DB)
+SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish)
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
-REPORTS = ReportService(MEMORY, DB)
+REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
 
 
@@ -109,13 +114,35 @@ class PairInput(BaseModel):
     device_name: str = Field(default="未命名设备", max_length=80)
 
 
+class LocationSettingsInput(BaseModel):
+    enabled: bool = False
+    default_label: str = Field(default="", max_length=120)
+    default_latitude: Optional[float] = None
+    default_longitude: Optional[float] = None
+    map_provider: str = "amap"
+    map_api_key: str = ""
+    map_security_code: str = ""
+
+
+class LocationReportInput(BaseModel):
+    source: str
+    latitude: float
+    longitude: float
+    label: str = Field(default="", max_length=120)
+    enabled: bool = True
+
+
+class NotificationSettingsInput(BaseModel):
+    enabled: bool = False
+
+
 def sync_email_accounts(refresh: bool = False) -> dict:
     accounts = DB.rows("SELECT * FROM email_accounts WHERE enabled=1 ORDER BY id")
     result = {"accounts": [], "messages": 0, "attachments": 0}
     for account in accounts:
         item = {"name": account["name"], "username": account["username"], "ok": False, "count": 0}
         try:
-            connector = ImapConnector(account["host"], account["username"], account["authorization_code"], account["port"])
+            connector = ImapConnector(account["host"], account["username"], SECRETS.decrypt(account["authorization_code"]), account["port"])
             messages = connector.recent(20) if refresh else connector.unread(20)
             for message in messages:
                 if not refresh and DB.rows("SELECT 1 FROM email_seen WHERE account_id=? AND message_uid=?", (account["id"], message["uid"])):
@@ -182,7 +209,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="第二大脑", version=APP_VERSION, lifespan=lifespan)
 
-PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/pair"}
+PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/pair", "/api/auth/local-token"}
 
 
 def request_token(request: Request) -> Optional[str]:
@@ -195,9 +222,9 @@ def request_token(request: Request) -> Optional[str]:
 @app.middleware("http")
 async def protect_personal_api(request: Request, call_next):
     path = request.url.path
+    if path.startswith("/api/") and not ACCESS.is_trusted_network(request.client.host if request.client else None):
+        return JSONResponse({"detail": "只允许本机或可信局域网设备访问"}, status_code=403)
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS:
-        return await call_next(request)
-    if ACCESS.is_loopback(request.client.host if request.client else None):
         return await call_next(request)
     if not ACCESS.verify(request_token(request)):
         return JSONResponse(
@@ -216,8 +243,18 @@ def health():
 @app.get("/api/auth/status")
 def auth_status(request: Request):
     local = ACCESS.is_loopback(request.client.host if request.client else None)
-    authenticated = local or ACCESS.verify(request_token(request))
+    authenticated = ACCESS.verify(request_token(request))
     return {"authenticated": authenticated, "local": local, "requires_pairing": not authenticated}
+
+
+@app.get("/api/auth/local-token")
+def auth_local_token(request: Request):
+    if not ACCESS.is_loopback(request.client.host if request.client else None):
+        raise HTTPException(403, "本机令牌只能由电脑本机获取")
+    token = ACCESS.browser_token()
+    response = JSONResponse({"token": token})
+    response.set_cookie("second_brain_token", token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 365)
+    return response
 
 
 @app.post("/api/auth/pair")
@@ -262,12 +299,30 @@ def auth_device_revoke(token_id: int, request: Request):
 
 @app.post("/api/chat")
 def chat(body: ChatInput):
-    return SERVICE.chat(body.message, body.provider, body.model, body.file_hashes, body.file_note)
+    try:
+        return SERVICE.chat(body.message, body.provider, body.model, body.file_hashes, body.file_note)
+    except ModelError as exc:
+        raise HTTPException(429 if exc.code == "rate_limited" else 503, detail={"code": exc.code, "message": exc.user_message, "retryable": exc.retryable})
+
+
+@app.post("/api/chat/stream")
+def chat_stream(body: ChatInput):
+    def events():
+        try:
+            for item in SERVICE.chat_stream(body.message, body.provider, body.model, body.file_hashes, body.file_note):
+                yield f"event: {item['event']}\ndata: {json.dumps(item['data'], ensure_ascii=False)}\n\n"
+        except ModelError as exc:
+            payload = {"code": exc.code, "message": exc.user_message, "retryable": exc.retryable}
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception:
+            payload = {"code": "internal_error", "message": "处理失败，请重试；若持续出现请查看服务日志", "retryable": True}
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/chats")
-def chats(limit: int = 100):
-    return {"chats": SERVICE.chat_history(limit)}
+def chats(limit: int = 100, q: str = ""):
+    return {"chats": SERVICE.chat_history(limit, q)}
 
 
 @app.delete("/api/chats/{chat_id}")
@@ -384,7 +439,7 @@ def email_account_save(body: EmailAccountInput):
             raise HTTPException(400, "首次连接必须填写邮箱授权码")
         authorization_code = existing[0]["authorization_code"]
     else:
-        authorization_code = body.authorization_code
+        authorization_code = SECRETS.encrypt(body.authorization_code)
     with DB.connect() as db:
         db.execute(
             "INSERT INTO email_accounts(name,host,port,username,authorization_code,enabled) VALUES(?,?,?,?,?,?) "
@@ -392,6 +447,82 @@ def email_account_save(body: EmailAccountInput):
             (body.name, body.host, body.port, body.username, authorization_code, int(body.enabled)),
         )
     return {"ok": True}
+
+
+@app.get("/api/location/settings")
+def location_settings():
+    default = DB.rows("SELECT label,latitude,longitude,enabled,updated_at FROM locations WHERE source='default'")
+    return {
+        "enabled": DB.setting("location_enabled", "0") == "1",
+        "default": default[0] if default else None,
+        "map_provider": DB.setting("map_provider", "amap"),
+        "has_map_api_key": bool(DB.setting("map_api_key", "")),
+        "has_map_security_code": bool(DB.setting("map_security_code", "")),
+        "sources": DB.rows("SELECT source,label,latitude,longitude,enabled,updated_at FROM locations ORDER BY updated_at DESC"),
+    }
+
+
+@app.post("/api/location/settings")
+def location_settings_save(body: LocationSettingsInput):
+    if body.map_provider != "amap":
+        raise HTTPException(400, "当前版本仅支持高德地图")
+    if (body.default_latitude is None) != (body.default_longitude is None):
+        raise HTTPException(400, "默认位置的经纬度需要同时填写")
+    DB.set_setting("location_enabled", "1" if body.enabled else "0")
+    DB.set_setting("map_provider", body.map_provider)
+    if body.map_api_key:
+        DB.set_setting("map_api_key", SECRETS.encrypt(body.map_api_key))
+    if body.map_security_code:
+        DB.set_setting("map_security_code", SECRETS.encrypt(body.map_security_code))
+    with DB.connect() as db:
+        db.execute(
+            "INSERT INTO locations(source,label,latitude,longitude,enabled,updated_at) VALUES('default',?,?,?,?,datetime('now','localtime')) "
+            "ON CONFLICT(source) DO UPDATE SET label=excluded.label,latitude=excluded.latitude,longitude=excluded.longitude,enabled=excluded.enabled,updated_at=excluded.updated_at",
+            (body.default_label.strip(), body.default_latitude, body.default_longitude, int(body.enabled)),
+        )
+    return {"ok": True}
+
+
+@app.post("/api/location/report")
+def location_report(body: LocationReportInput):
+    if body.source not in {"browser", "android"}:
+        raise HTTPException(400, "位置来源必须是浏览器或 Android")
+    if not (-90 <= body.latitude <= 90 and -180 <= body.longitude <= 180):
+        raise HTTPException(400, "经纬度超出范围")
+    with DB.connect() as db:
+        db.execute(
+            "INSERT INTO locations(source,label,latitude,longitude,enabled,updated_at) VALUES(?,?,?,?,?,datetime('now','localtime')) "
+            "ON CONFLICT(source) DO UPDATE SET label=excluded.label,latitude=excluded.latitude,longitude=excluded.longitude,enabled=excluded.enabled,updated_at=excluded.updated_at",
+            (body.source, body.label.strip(), body.latitude, body.longitude, int(body.enabled)),
+        )
+    return {"ok": True, "source": body.source}
+
+
+@app.get("/api/map/config")
+def map_config():
+    key = DB.setting("map_api_key", "") or ""
+    security = DB.setting("map_security_code", "") or ""
+    return {
+        "provider": DB.setting("map_provider", "amap"),
+        "api_key": SECRETS.decrypt(key),
+        "security_code": SECRETS.decrypt(security),
+    }
+
+
+@app.get("/api/notification-settings")
+def notification_settings():
+    return {"enabled": DB.setting("notifications_enabled", "0") == "1"}
+
+
+@app.post("/api/notification-settings")
+def notification_settings_save(body: NotificationSettingsInput):
+    DB.set_setting("notifications_enabled", "1" if body.enabled else "0")
+    return {"ok": True}
+
+
+@app.get("/api/notifications")
+def notifications(after_id: int = 0, limit: int = 50):
+    return {"notifications": NOTIFICATIONS.since(after_id, limit)}
 
 
 @app.post("/api/email/sync")

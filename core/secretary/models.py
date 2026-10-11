@@ -7,11 +7,35 @@ import mimetypes
 import re
 import urllib.error
 import urllib.request
+import socket
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Iterator, Optional
 
 from .database import Database
+from .secrets import SecretStore
+
+
+class ModelError(RuntimeError):
+    code = "provider_error"
+    user_message = "模型服务暂时不可用，请稍后重试"
+    retryable = True
+
+
+class ModelNotConfiguredError(ModelError):
+    code = "model_not_configured"
+    user_message = "尚未配置文字模型，请先到设置页添加供应商并选择文字处理模型"
+    retryable = False
+
+
+class ModelNetworkError(ModelError):
+    code = "network_error"
+    user_message = "无法连接模型服务，请检查网络和接口地址后重试"
+
+
+class ModelRateLimitError(ModelError):
+    code = "rate_limited"
+    user_message = "模型请求过于频繁或额度已用尽，请稍后重试或更换模型"
 
 
 @dataclass
@@ -26,8 +50,10 @@ class Route:
 class ModelRouter:
     TASKS = ("fast", "smart", "vision", "video", "transcribe")
 
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, secrets: Optional[SecretStore] = None):
         self.database = database
+        self.secrets = secrets or SecretStore(database.path.parent / ".secrets-key")
+        self.secrets.migrate_database(database)
 
     def providers(self) -> list[dict]:
         self.seed_known_prices()
@@ -111,7 +137,7 @@ class ModelRouter:
             db.execute(
                 "INSERT INTO providers(name,base_url,api_key,models,kind,consumption_level) VALUES(?,?,?,?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET base_url=excluded.base_url,api_key=CASE WHEN excluded.api_key='' THEN providers.api_key ELSE excluded.api_key END,models=excluded.models,kind=excluded.kind,consumption_level=excluded.consumption_level",
-                (name, base_url.rstrip("/"), api_key, json.dumps(models, ensure_ascii=False), kind, consumption_level),
+                (name, base_url.rstrip("/"), self.secrets.encrypt(api_key), json.dumps(models, ensure_ascii=False), kind, consumption_level),
             )
 
     def set_route(self, route: Route) -> None:
@@ -147,7 +173,7 @@ class ModelRouter:
             attempts = [(provider, model)]
         else:
             if not route:
-                raise RuntimeError(f"尚未配置 {task} 模型")
+                raise ModelNotConfiguredError(f"尚未配置 {task} 模型")
             attempts = [(route.provider, route.model)]
             if route.fallback_provider and route.fallback_model:
                 attempts.append((route.fallback_provider, route.fallback_model))
@@ -155,13 +181,46 @@ class ModelRouter:
         for provider_name, model in attempts:
             try:
                 return self._openai_call(task, provider_name, model, messages, temperature)
+            except ModelNotConfiguredError:
+                raise
             except Exception as exc:  # retry once, then route fallback
                 last_error = str(exc)
                 try:
                     return self._openai_call(task, provider_name, model, messages, temperature)
                 except Exception as retry_exc:
                     last_error = str(retry_exc)
-        raise RuntimeError(f"模型调用失败：{last_error}")
+                    last_exception = retry_exc
+        if isinstance(locals().get("last_exception"), ModelError):
+            raise last_exception
+        raise ModelError(f"模型调用失败：{last_error}")
+
+    def stream_complete(self, task: str, messages: list[dict], temperature: float = 0.2,
+                        provider: Optional[str] = None, model: Optional[str] = None) -> Iterator[str]:
+        route = self.route(task)
+        if provider or model:
+            if not provider or not model:
+                raise ValueError("临时模型必须同时指定供应商和模型")
+            attempts = [(provider, model)]
+        elif route:
+            attempts = [(route.provider, route.model)]
+            if route.fallback_provider and route.fallback_model:
+                attempts.append((route.fallback_provider, route.fallback_model))
+        else:
+            raise ModelNotConfiguredError(f"尚未配置 {task} 模型")
+
+        last_error: Exception = ModelError("模型调用失败")
+        for provider_name, selected_model in attempts:
+            emitted = False
+            try:
+                for chunk in self._openai_stream(task, provider_name, selected_model, messages, temperature):
+                    emitted = True
+                    yield chunk
+                return
+            except Exception as exc:
+                if emitted:
+                    raise self._classify_error(exc) from exc
+                last_error = self._classify_error(exc)
+        raise last_error
 
     def analyze_images(self, task: str, paths: list, prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
         content = [{"type": "text", "text": prompt}]
@@ -202,7 +261,7 @@ class ModelRouter:
                 request = urllib.request.Request(
                     provider["base_url"].rstrip("/") + "/chat/completions",
                     data=payload,
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {provider['api_key']}"},
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.secrets.decrypt(provider['api_key'])}"},
                 )
                 with urllib.request.urlopen(request, timeout=90) as response:
                     result = json.loads(response.read())
@@ -232,9 +291,11 @@ class ModelRouter:
                 level_label = {"low": "小", "medium": "中", "high": "大"}.get(level, "中")
                 answer += f"\n\n（回答达到“{level_label}消耗”上限；如需更详细内容，可提高该供应商的消耗程度后继续提问。）"
             return answer
-        except (urllib.error.URLError, KeyError, ValueError) as exc:
+        except (urllib.error.URLError, KeyError, ValueError, socket.timeout) as exc:
             status, error = "error", str(exc)
-            raise
+            if isinstance(exc, ValueError):
+                raise
+            raise self._classify_error(exc) from exc
         finally:
             cost = self._cost_cny(provider_name, model, prompt_tokens, completion_tokens)
             with self.database.connect() as db:
@@ -242,6 +303,75 @@ class ModelRouter:
                     "INSERT INTO ai_calls(created_at,task,provider,model,prompt_tokens,completion_tokens,estimated_cost,status,error) VALUES(?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(timespec="seconds"), task, provider_name, model, prompt_tokens, completion_tokens, cost, status, error),
                 )
+
+    def _openai_stream(self, task: str, provider_name: str, model: str, messages: list[dict], temperature: float) -> Iterator[str]:
+        rows = self.database.rows("SELECT * FROM providers WHERE name=?", (provider_name,))
+        if not rows:
+            raise ModelNotConfiguredError(f"供应商不存在：{provider_name}")
+        provider = rows[0]
+        max_tokens = {"low": 2048, "medium": 4096, "high": 8192}.get(provider["consumption_level"], 4096)
+        prompt_tokens = self._estimate_tokens(messages)
+        completion_tokens = 0
+        status, error = "ok", None
+        try:
+            payload = json.dumps({
+                "model": model, "messages": messages, "temperature": temperature,
+                "max_tokens": max_tokens, "stream": True,
+                "stream_options": {"include_usage": True},
+            }).encode()
+            request = urllib.request.Request(
+                provider["base_url"].rstrip("/") + "/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.secrets.decrypt(provider['api_key'])}"},
+            )
+            with urllib.request.urlopen(request, timeout=90) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    event = json.loads(data)
+                    usage = event.get("usage") or {}
+                    if usage:
+                        prompt_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", prompt_tokens)) or prompt_tokens)
+                        completion_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", completion_tokens)) or completion_tokens)
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {}).get("content", "")
+                    if isinstance(delta, list):
+                        delta = "".join(str(item.get("text", "")) for item in delta if isinstance(item, dict))
+                    if delta:
+                        completion_tokens += self._estimate_tokens(delta) if not usage else 0
+                        yield str(delta)
+        except Exception as exc:
+            status, error = "error", str(exc)
+            raise self._classify_error(exc) from exc
+        finally:
+            cost = self._cost_cny(provider_name, model, prompt_tokens, completion_tokens)
+            with self.database.connect() as db:
+                db.execute(
+                    "INSERT INTO ai_calls(created_at,task,provider,model,prompt_tokens,completion_tokens,estimated_cost,status,error) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (datetime.now().isoformat(timespec="seconds"), task, provider_name, model, prompt_tokens, completion_tokens, cost, status, error),
+                )
+
+    @staticmethod
+    def _classify_error(exc: Exception) -> ModelError:
+        if isinstance(exc, ModelError):
+            return exc
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 429:
+                return ModelRateLimitError(str(exc))
+            if exc.code in {401, 403}:
+                error = ModelError("模型密钥无效或没有权限")
+                error.user_message = "模型密钥无效或没有权限，请到设置页检查 API Key"
+                error.retryable = False
+                return error
+        if isinstance(exc, (urllib.error.URLError, socket.timeout, TimeoutError)):
+            return ModelNetworkError(str(exc))
+        return ModelError(str(exc))
 
     @classmethod
     def _estimate_tokens(cls, value) -> int:

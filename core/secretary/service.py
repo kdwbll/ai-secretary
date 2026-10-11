@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
+from zoneinfo import ZoneInfo
 
 from .database import Database
 from .health import HealthService
@@ -24,8 +25,9 @@ DOMAIN_HINTS = {
 
 
 class SecretaryService:
-    def __init__(self, memory: MemoryEngine, database: Database, models: ModelRouter, prompt_dir: Path):
+    def __init__(self, memory: MemoryEngine, database: Database, models: ModelRouter, prompt_dir: Path, notifications=None):
         self.memory, self.database, self.models, self.prompt_dir = memory, database, models, prompt_dir
+        self.notifications = notifications
 
     def initialize(self) -> None:
         self.memory.initialize()
@@ -44,7 +46,8 @@ class SecretaryService:
                 chosen.append(path)
         return chosen[:limit] or ["me.md", "work-study.md"]
 
-    def _context(self, message: str, file_hashes: Optional[list[str]] = None, file_note: str = "") -> str:
+    def _context(self, message: str, file_hashes: Optional[list[str]] = None, file_note: str = "",
+                 location_plan: Optional[dict[str, Any]] = None) -> str:
         limit = int(self.database.setting("max_context_files", "5") or 5)
         paths = self.choose_context(message, limit)
         for offset in range(3):
@@ -58,7 +61,11 @@ class SecretaryService:
             except (FileNotFoundError, UnicodeDecodeError):
                 # One incomplete or malformed note should not block the whole assistant.
                 continue
-        context = "\n\n".join(sections)
+        context = self._time_context() + "\n\n" + "\n\n".join(sections)
+        if location_plan and location_plan.get("show"):
+            location_context = self._location_context()
+            if location_context:
+                context += "\n\n" + location_context
         if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
             context += "\n\n" + self._health_context()
         email_context = self._email_context(message)
@@ -76,6 +83,82 @@ class SecretaryService:
             context += "\n\n## 可在回答下方展示的历史照片候选\n" + names
             context += "\n这些是按文件名、图片分析文字和上传时间选出的候选；若地点没有明确记录，不要把地点说成已确认事实。"
         return context
+
+    @staticmethod
+    def _time_context(now: Optional[datetime] = None) -> str:
+        current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+        weekdays = "一二三四五六日"
+        return (
+            "## 当前时间（可信系统信息）\n"
+            f"时区：Asia/Shanghai\n日期：{current:%Y年%m月%d日}\n"
+            f"星期：星期{weekdays[current.weekday()]}\n时间：{current:%H:%M:%S}\n"
+            "回答‘现在几点’或‘今天周几’时直接使用这里的信息，不要猜测。"
+        )
+
+    @staticmethod
+    def _location_candidate(message: str) -> bool:
+        lowered = message.lower()
+        return any(word in lowered for word in (
+            "附近", "怎么去", "怎么走", "在哪里", "在哪儿", "位置", "路线", "导航", "地图",
+            "离我", "周边", "最近的", "地址", "where", "nearby", "direction",
+        ))
+
+    def _location_plan(self, message: str) -> dict[str, Any]:
+        if not self._location_candidate(message):
+            return {"show": False}
+        fallback = {"show": True, "query": message[:120], "mode": "place"}
+        try:
+            raw = self.models.complete("fast", [
+                {"role": "system", "content": (
+                    "判断用户问题是否需要地图。只输出 JSON："
+                    '{"show":true或false,"query":"地图检索短语","mode":"nearby|route|place"}。'
+                    "附近、怎么去、在哪里等需要；普通聊天不要地图。"
+                )},
+                {"role": "user", "content": message},
+            ], temperature=0)
+            match = re.search(r"\{.*\}", raw, re.S)
+            plan = json.loads(match.group(0)) if match else {}
+            return {
+                "show": bool(plan.get("show")),
+                "query": str(plan.get("query") or message)[:120],
+                "mode": plan.get("mode") if plan.get("mode") in {"nearby", "route", "place"} else "place",
+            }
+        except Exception:
+            return fallback
+
+    def _location_context(self) -> str:
+        if self.database.setting("location_enabled", "0") != "1":
+            return "## 位置\n位置功能当前已关闭；不要推断用户所在位置。"
+        rows = self.database.rows(
+            "SELECT source,label,latitude,longitude,updated_at FROM locations WHERE enabled=1 "
+            "ORDER BY CASE source WHEN 'android' THEN 0 WHEN 'browser' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1"
+        )
+        if not rows:
+            return "## 位置\n位置功能已开启，但用户尚未主动保存或上报位置；不要猜测。"
+        item = rows[0]
+        labels = {"default": "默认位置", "browser": "浏览器主动授权位置", "android": "Android 伴侣主动上报位置"}
+        coordinates = ""
+        if item["latitude"] is not None and item["longitude"] is not None:
+            coordinates = f"；坐标：{item['longitude']},{item['latitude']}"
+        return f"## 仅供本次位置问题使用的本机位置\n来源：{labels.get(item['source'], item['source'])}；地点：{item['label'] or '未命名'}{coordinates}；更新时间：{item['updated_at']}"
+
+    def _map_attachment(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        if not plan.get("show") or self.database.setting("location_enabled", "0") != "1":
+            return []
+        rows = self.database.rows(
+            "SELECT label,latitude,longitude FROM locations WHERE enabled=1 "
+            "ORDER BY CASE source WHEN 'android' THEN 0 WHEN 'browser' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1"
+        )
+        item = rows[0] if rows else {}
+        return [{
+            "query": plan.get("query", ""), "mode": plan.get("mode", "place"),
+            "label": item.get("label", ""), "latitude": item.get("latitude"), "longitude": item.get("longitude"),
+        }]
+
+    @staticmethod
+    def _chat_title(message: str) -> str:
+        first = re.split(r"[。！？!?\n]", message.strip(), maxsplit=1)[0].strip()
+        return (first or "新对话")[:40]
 
     def _email_context(self, message: str) -> str:
         explicit = any(word in message.lower() for word in ("邮件", "邮箱", "email", "mail"))
@@ -245,11 +328,12 @@ class SecretaryService:
         message = message.strip()
         file_hashes = list(dict.fromkeys(file_hashes or []))[:10]
         user_files = self._attachment_rows(file_hashes)
-        attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": [], "file_note": file_note.strip()}
+        plan = self._location_plan(message)
+        attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": [], "maps": self._map_attachment(plan), "file_note": file_note.strip()}
         with self.database.connect() as db:
             cursor = db.execute(
-                "INSERT INTO chat_messages(created_at,user_message,provider,model) VALUES(datetime('now','localtime'),?,?,?)",
-                (message, provider, model),
+                "INSERT INTO chat_messages(created_at,user_message,provider,model,title) VALUES(datetime('now','localtime'),?,?,?,?)",
+                (message, provider, model, self._chat_title(message)),
             )
             chat_id = int(cursor.lastrowid)
         forget = re.match(r"^(?:请)?忘掉|^(?:请)?忘记", message)
@@ -262,17 +346,14 @@ class SecretaryService:
             return result
 
         try:
-            context = self._context(message, file_hashes, file_note)
+            context = self._context(message, file_hashes, file_note, plan)
             paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
         except Exception:
             answer = "这条消息已保存，但本地记忆暂时无法读取，因此无法完成本次回答。请检查记忆文件后重试。"
             self._finish_chat(chat_id, answer, [], attachments)
             return {"id": chat_id, "answer": answer, "sources": [], "attachments": attachments}
-        try:
-            system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
-            answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
-        except RuntimeError:
-            answer = self._local_answer(message, context, paths)
+        system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
+        answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
         if not isinstance(answer, str) or not answer.strip():
             answer = self._local_answer(message, context, paths)
         answer, links = self._enrich_answer(message, answer)
@@ -288,6 +369,53 @@ class SecretaryService:
         self._finish_chat(chat_id, answer, paths, attachments)
         return {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}
 
+    def chat_stream(self, message: str, provider: Optional[str] = None, model: Optional[str] = None,
+                    file_hashes: Optional[list[str]] = None, file_note: str = "") -> Iterator[dict[str, Any]]:
+        message = message.strip()
+        file_hashes = list(dict.fromkeys(file_hashes or []))[:10]
+        plan = self._location_plan(message)
+        attachments: dict[str, Any] = {
+            "user_files": self._attachment_rows(file_hashes), "assistant_files": [], "links": [],
+            "maps": self._map_attachment(plan), "file_note": file_note.strip(),
+        }
+        with self.database.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO chat_messages(created_at,user_message,provider,model,title) VALUES(datetime('now','localtime'),?,?,?,?)",
+                (message, provider, model, self._chat_title(message)),
+            )
+            chat_id = int(cursor.lastrowid)
+        context = self._context(message, file_hashes, file_note, plan)
+        paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
+        system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
+        answer_parts: list[str] = []
+        yield {"event": "start", "data": {"id": chat_id, "title": self._chat_title(message)}}
+        try:
+            for chunk in self.models.stream_complete(
+                "smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}],
+                provider=provider, model=model,
+            ):
+                answer_parts.append(chunk)
+                yield {"event": "delta", "data": {"text": chunk}}
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                raise RuntimeError("模型返回了空内容")
+            answer, links = self._enrich_answer(message, answer)
+            attachments["links"] = links
+            attachments["assistant_files"] = self._related_images(message, file_hashes)
+            try:
+                self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
+                self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
+                self.memory.rebuild_index()
+            except Exception:
+                pass
+            self._finish_chat(chat_id, answer, paths, attachments)
+            yield {"event": "done", "data": {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}}
+        except Exception:
+            partial = "".join(answer_parts).strip()
+            if partial:
+                self._finish_chat(chat_id, partial, paths, attachments)
+            raise
+
     def _finish_chat(self, chat_id: int, answer: str, sources: list[str], attachments: Optional[dict[str, Any]] = None) -> None:
         with self.database.connect() as db:
             db.execute(
@@ -295,11 +423,21 @@ class SecretaryService:
                 (answer, json.dumps(sources, ensure_ascii=False), json.dumps(attachments or {}, ensure_ascii=False), chat_id),
             )
 
-    def chat_history(self, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.database.rows(
-            "SELECT id,created_at,user_message,assistant_message,sources,provider,model,attachments FROM chat_messages ORDER BY id DESC LIMIT ?",
-            (max(1, min(limit, 500)),),
-        )
+    def chat_history(self, limit: int = 100, query: str = "") -> list[dict[str, Any]]:
+        query = query.strip()
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            rows = self.database.rows(
+                "SELECT id,created_at,user_message,assistant_message,sources,provider,model,attachments,title "
+                "FROM chat_messages WHERE title LIKE ? ESCAPE '\\' OR user_message LIKE ? ESCAPE '\\' OR assistant_message LIKE ? ESCAPE '\\' "
+                "ORDER BY id DESC LIMIT ?",
+                (f"%{escaped}%", f"%{escaped}%", f"%{escaped}%", max(1, min(limit, 500))),
+            )
+        else:
+            rows = self.database.rows(
+                "SELECT id,created_at,user_message,assistant_message,sources,provider,model,attachments,title FROM chat_messages ORDER BY id DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            )
         for row in rows:
             row["sources"] = json.loads(row["sources"] or "[]")
             row["attachments"] = json.loads(row["attachments"] or "{}")
@@ -412,6 +550,8 @@ class SecretaryService:
     def _apply_event(self, event: ParsedEvent, source: str) -> None:
         if event.ignored:
             return
+        if event.kind == "pickup" and self.notifications:
+            self.notifications("pickup", "收到取件提醒", event.raw or event.title)
         self.memory.append_daily(event.raw or event.title, source, inferred=event.kind == "unknown")
         if event.kind == "expense" and event.amount is not None:
             detail = f"{date.today().isoformat()} 支出 ¥{event.amount:.2f}"
