@@ -32,10 +32,10 @@ class WebSearchService:
     def search(self, query: str, category: str = "web", limit: int = 6) -> SearchOutcome:
         if self.database.setting("web_search_enabled", "0") != "1":
             return SearchOutcome(error="联网搜索未开启。请在设置页启用后再试。")
-        provider = self.database.setting("web_search_provider", "brave") or "brave"
+        provider = self.database.setting("web_search_provider", "bocha") or "bocha"
         try:
-            if provider == "brave":
-                return self._brave(query, category, limit)
+            if provider == "bocha":
+                return self._bocha(query, category, limit)
             if provider == "searxng":
                 return self._searxng(query, category, limit)
             return SearchOutcome(error="联网搜索供应商配置无效。", provider=provider)
@@ -50,26 +50,41 @@ class WebSearchService:
         except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
             return SearchOutcome(error="联网搜索失败，请检查电脑网络与搜索服务设置。", provider=provider)
 
-    def _brave(self, query: str, category: str, limit: int) -> SearchOutcome:
-        encrypted = self.database.setting("web_search_api_key", "") or ""
+    def _bocha(self, query: str, category: str, limit: int) -> SearchOutcome:
+        encrypted = self.database.setting("bocha_search_api_key", "") or ""
         if not encrypted:
-            return SearchOutcome(error="尚未填写 Brave Search API Key。", provider="brave")
+            return SearchOutcome(error="尚未填写博查 Web Search API Key。", provider="bocha")
         key = self.secret_store.decrypt(encrypted)
-        endpoint = "https://api.search.brave.com/res/v1/news/search" if category == "news" else "https://api.search.brave.com/res/v1/web/search"
-        params = {
-            "q": query[:600], "count": max(1, min(limit, 10)), "country": "CN",
-            "search_lang": "zh-hans", "ui_lang": "zh-CN", "safesearch": "moderate",
+        body: dict[str, object] = {
+            "query": query[:600],
+            "summary": True,
+            "count": max(1, min(limit, 10)),
         }
         if category == "news":
-            params["freshness"] = "pw"
+            body["freshness"] = "oneWeek"
         request = Request(
-            endpoint + "?" + urlencode(params),
-            headers={"Accept": "application/json", "X-Subscription-Token": key, "User-Agent": "SecondBrain/0.7.4"},
+            "https://api.bochaai.com/v1/web-search",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "SecondBrain/0.7.5",
+            },
+            method="POST",
         )
         with urlopen(request, timeout=8) as response:
             payload = json.loads(response.read(2_000_000).decode("utf-8"))
-        container = payload.get("results") if category == "news" else (payload.get("web") or {}).get("results")
-        return SearchOutcome(results=self._normalize(container or [], limit), provider="brave")
+        container = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        items = ((container.get("webPages") or {}).get("value") or []) if isinstance(container, dict) else []
+        normalized = [{
+            "title": item.get("name") or item.get("title"),
+            "url": item.get("url"),
+            "description": item.get("summary") or item.get("snippet"),
+            "published": item.get("datePublished"),
+            "site": item.get("siteName"),
+        } for item in items if isinstance(item, dict)]
+        return SearchOutcome(results=self._normalize(normalized, limit), provider="bocha")
 
     def _searxng(self, query: str, category: str, limit: int) -> SearchOutcome:
         base = (self.database.setting("searxng_url", "") or "").strip()
@@ -83,7 +98,7 @@ class WebSearchService:
             "q": query[:600], "format": "json", "language": "zh-CN", "safesearch": 1,
             "categories": "news" if category == "news" else "general",
         }
-        request = Request(endpoint + "?" + urlencode(params), headers={"Accept": "application/json", "User-Agent": "SecondBrain/0.7.4"})
+        request = Request(endpoint + "?" + urlencode(params), headers={"Accept": "application/json", "User-Agent": "SecondBrain/0.7.5"})
         with urlopen(request, timeout=8) as response:
             payload = json.loads(response.read(2_000_000).decode("utf-8"))
         return SearchOutcome(results=self._normalize(payload.get("results") or [], limit), provider="searxng")
@@ -102,6 +117,7 @@ class WebSearchService:
             results.append({
                 "title": title[:300], "url": url[:2000], "snippet": snippet[:1200],
                 "age": str(item.get("age") or item.get("published") or item.get("publishedDate") or "")[:80],
+                "site": WebSearchService._plain(item.get("site") or item.get("site_name") or "")[:120],
             })
             seen.add(url)
             if len(results) >= limit:

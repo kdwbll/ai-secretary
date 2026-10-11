@@ -145,6 +145,13 @@ class SecretaryService:
         return "\n".join(lines)
 
     @staticmethod
+    def _web_search_links(outcome: Optional[SearchOutcome]) -> list[dict[str, str]]:
+        if not outcome:
+            return []
+        source = {"bocha": "博查搜索", "searxng": "本机 SearXNG"}.get(outcome.provider, "联网搜索")
+        return [{"title": item["title"], "url": item["url"], "source": source} for item in outcome.results]
+
+    @staticmethod
     def _time_context(now: Optional[datetime] = None) -> str:
         current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
         weekdays = "一二三四五六日"
@@ -447,10 +454,7 @@ class SecretaryService:
         user_files = self._attachment_rows(file_hashes)
         plan = self._location_plan(message)
         web_outcome = self._web_search(message)
-        web_links = [
-            {"title": item["title"], "url": item["url"], "source": "联网搜索"}
-            for item in (web_outcome.results if web_outcome else [])
-        ]
+        web_links = self._web_search_links(web_outcome)
         warnings = [web_outcome.error] if web_outcome and web_outcome.error else []
         attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": web_links, "maps": self._map_attachment(plan), "warnings": warnings, "file_note": file_note.strip()}
         with self.database.connect() as db:
@@ -492,10 +496,7 @@ class SecretaryService:
         file_hashes = list(dict.fromkeys(file_hashes or []))[:10]
         plan = self._location_plan(message)
         web_outcome = self._web_search(message)
-        web_links = [
-            {"title": item["title"], "url": item["url"], "source": "联网搜索"}
-            for item in (web_outcome.results if web_outcome else [])
-        ]
+        web_links = self._web_search_links(web_outcome)
         attachments: dict[str, Any] = {
             "user_files": self._attachment_rows(file_hashes), "assistant_files": [], "links": web_links,
             "maps": self._map_attachment(plan), "warnings": [web_outcome.error] if web_outcome and web_outcome.error else [], "file_note": file_note.strip(),

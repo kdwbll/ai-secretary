@@ -139,6 +139,10 @@ def _add_notifications(db: sqlite3.Connection) -> None:
     )
 
 
+def _switch_default_search_to_bocha(db: sqlite3.Connection) -> None:
+    db.execute("UPDATE settings SET value='bocha' WHERE key='web_search_provider' AND value='brave'")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -146,6 +150,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "add chat titles and search", _add_chat_titles),
     Migration(5, "add local location sources", _add_locations),
     Migration(6, "add local notification outbox", _add_notifications),
+    Migration(7, "switch default web search to bocha", _switch_default_search_to_bocha),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
