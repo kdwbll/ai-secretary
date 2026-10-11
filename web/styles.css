@@ -24,6 +24,7 @@
 .attach-button,.send{border-radius:11px}
 .error-message{border:1px solid #d8a29c;background:#fff0ed!important}
 .error-message .retry-chat{margin-top:9px}
+.memory-warning{margin-top:10px;padding:9px 11px;border-radius:10px;background:#fff1d8;color:#80551d;font-size:10px;line-height:1.55;border:1px solid #e7c98d}
 .map-card{margin-top:11px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--white)}
 .map-card .map-canvas{height:260px;width:100%;display:grid;place-items:center}
 .map-card>small{display:block;padding:8px 11px;color:var(--muted)}

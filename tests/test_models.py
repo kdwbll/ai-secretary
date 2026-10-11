@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from core.secretary.database import Database
-from core.secretary.models import ModelRouter, Route
+from core.secretary.models import ModelNetworkError, ModelRateLimitError, ModelResponseError, ModelRouter, Route
 
 
 class RouterTests(unittest.TestCase):
@@ -86,6 +86,35 @@ class RouterTests(unittest.TestCase):
             with patch.object(router, "_openai_call", return_value="ok") as call:
                 self.assertEqual(router.complete("smart", [], provider="two", model="chosen"), "ok")
                 self.assertEqual(call.call_args.args[1:3], ("two", "chosen"))
+
+    def test_retry_waits_before_second_attempt(self):
+        with TemporaryDirectory() as temp:
+            router = ModelRouter(Database(Path(temp) / "db.sqlite"))
+            router.save_provider("one", "http://one/v1", "a", ["default"])
+            router.set_route(Route("smart", "one", "default"))
+            with patch.object(router, "_openai_call", side_effect=[ModelNetworkError("offline"), "ok"]) as call, \
+                    patch("core.secretary.models.time.sleep") as sleep:
+                self.assertEqual(router.complete("smart", []), "ok")
+            self.assertEqual(call.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+
+    def test_rate_limit_respects_bounded_retry_after(self):
+        error = ModelRateLimitError("limited", retry_after=60)
+        with patch("core.secretary.models.time.sleep") as sleep:
+            ModelRouter._sleep_before_retry(error, 0)
+        sleep.assert_called_once_with(10.0)
+
+    def test_invalid_response_is_not_retried(self):
+        with TemporaryDirectory() as temp:
+            router = ModelRouter(Database(Path(temp) / "db.sqlite"))
+            router.save_provider("one", "http://one/v1", "a", ["default"])
+            router.set_route(Route("smart", "one", "default"))
+            with patch.object(router, "_openai_call", side_effect=ValueError("bad json")) as call, \
+                    patch("core.secretary.models.time.sleep") as sleep:
+                with self.assertRaises(ModelResponseError):
+                    router.complete("smart", [])
+            self.assertEqual(call.call_count, 1)
+            sleep.assert_not_called()
 
     def test_empty_model_content_is_an_error(self):
         with TemporaryDirectory() as temp:

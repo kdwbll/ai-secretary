@@ -166,7 +166,7 @@ class Database:
             defaults = {
                 "morning_time": "07:30", "review_time": "22:30", "max_context_files": "5",
                 "usd_cny_rate": "7.20", "location_enabled": "0", "map_provider": "amap",
-                "notifications_enabled": "0", "theme": "system",
+                "notifications_enabled": "0", "theme": "system", "max_upload_mb": "200",
             }
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))

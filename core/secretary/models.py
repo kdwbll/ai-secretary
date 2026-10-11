@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.request
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterator, Optional
@@ -36,6 +37,16 @@ class ModelNetworkError(ModelError):
 class ModelRateLimitError(ModelError):
     code = "rate_limited"
     user_message = "模型请求过于频繁或额度已用尽，请稍后重试或更换模型"
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ModelResponseError(ModelError):
+    code = "invalid_response"
+    user_message = "模型返回内容异常，请更换模型或稍后重试"
+    retryable = False
 
 
 @dataclass
@@ -177,22 +188,21 @@ class ModelRouter:
             attempts = [(route.provider, route.model)]
             if route.fallback_provider and route.fallback_model:
                 attempts.append((route.fallback_provider, route.fallback_model))
-        last_error = ""
+        last_exception: Exception = ModelError("模型调用失败")
         for provider_name, model in attempts:
-            try:
-                return self._openai_call(task, provider_name, model, messages, temperature)
-            except ModelNotConfiguredError:
-                raise
-            except Exception as exc:  # retry once, then route fallback
-                last_error = str(exc)
+            for retry_index in range(2):
                 try:
                     return self._openai_call(task, provider_name, model, messages, temperature)
-                except Exception as retry_exc:
-                    last_error = str(retry_exc)
-                    last_exception = retry_exc
-        if isinstance(locals().get("last_exception"), ModelError):
-            raise last_exception
-        raise ModelError(f"模型调用失败：{last_error}")
+                except ModelNotConfiguredError:
+                    raise
+                except Exception as exc:
+                    classified = self._classify_error(exc)
+                    last_exception = classified
+                    if retry_index == 0 and classified.retryable:
+                        self._sleep_before_retry(classified, retry_index)
+                        continue
+                    break
+        raise last_exception
 
     def stream_complete(self, task: str, messages: list[dict], temperature: float = 0.2,
                         provider: Optional[str] = None, model: Optional[str] = None) -> Iterator[str]:
@@ -210,17 +220,33 @@ class ModelRouter:
 
         last_error: Exception = ModelError("模型调用失败")
         for provider_name, selected_model in attempts:
-            emitted = False
-            try:
-                for chunk in self._openai_stream(task, provider_name, selected_model, messages, temperature):
-                    emitted = True
-                    yield chunk
-                return
-            except Exception as exc:
-                if emitted:
-                    raise self._classify_error(exc) from exc
-                last_error = self._classify_error(exc)
+            for retry_index in range(2):
+                emitted = False
+                try:
+                    for chunk in self._openai_stream(task, provider_name, selected_model, messages, temperature):
+                        emitted = True
+                        yield chunk
+                    return
+                except Exception as exc:
+                    classified = self._classify_error(exc)
+                    if emitted:
+                        raise classified from exc
+                    last_error = classified
+                    if retry_index == 0 and classified.retryable:
+                        self._sleep_before_retry(classified, retry_index)
+                        continue
+                    break
         raise last_error
+
+    @staticmethod
+    def _sleep_before_retry(error: ModelError, retry_index: int) -> None:
+        retry_after = getattr(error, "retry_after", None)
+        if retry_after is not None:
+            delay = max(0.5, min(float(retry_after), 10.0))
+        else:
+            base = 1.0 if isinstance(error, ModelRateLimitError) else 0.5
+            delay = min(base * (2 ** retry_index), 8.0)
+        time.sleep(delay)
 
     def analyze_images(self, task: str, paths: list, prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
         content = [{"type": "text", "text": prompt}]
@@ -363,7 +389,12 @@ class ModelRouter:
             return exc
         if isinstance(exc, urllib.error.HTTPError):
             if exc.code == 429:
-                return ModelRateLimitError(str(exc))
+                retry_after = None
+                try:
+                    retry_after = float(exc.headers.get("Retry-After")) if exc.headers.get("Retry-After") else None
+                except (TypeError, ValueError):
+                    pass
+                return ModelRateLimitError(str(exc), retry_after)
             if exc.code in {401, 403}:
                 error = ModelError("模型密钥无效或没有权限")
                 error.user_message = "模型密钥无效或没有权限，请到设置页检查 API Key"
@@ -371,6 +402,8 @@ class ModelRouter:
                 return error
         if isinstance(exc, (urllib.error.URLError, socket.timeout, TimeoutError)):
             return ModelNetworkError(str(exc))
+        if isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)):
+            return ModelResponseError(str(exc))
         return ModelError(str(exc))
 
     @classmethod

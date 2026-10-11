@@ -146,3 +146,12 @@ class ChatHistoryTests(TestCase):
             result = service.chat("哪里注册 Apple 账户？")
             self.assertIn("https://account.apple.com/", result["answer"])
             self.assertEqual(result["attachments"]["links"][0]["source"], "Apple 官方")
+
+    def test_memory_write_failure_is_visible_and_persisted(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.memory.append_daily = Mock(side_effect=PermissionError("read only"))
+            result = service.chat("帮我制定今天的计划")
+            self.assertIn("记忆写入失败", result["attachments"]["warnings"][0])
+            history = service.chat_history()
+            self.assertEqual(history[0]["attachments"]["warnings"], result["attachments"]["warnings"])

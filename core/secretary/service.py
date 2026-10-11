@@ -329,7 +329,7 @@ class SecretaryService:
         file_hashes = list(dict.fromkeys(file_hashes or []))[:10]
         user_files = self._attachment_rows(file_hashes)
         plan = self._location_plan(message)
-        attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": [], "maps": self._map_attachment(plan), "file_note": file_note.strip()}
+        attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": [], "maps": self._map_attachment(plan), "warnings": [], "file_note": file_note.strip()}
         with self.database.connect() as db:
             cursor = db.execute(
                 "INSERT INTO chat_messages(created_at,user_message,provider,model,title) VALUES(datetime('now','localtime'),?,?,?,?)",
@@ -359,13 +359,7 @@ class SecretaryService:
         answer, links = self._enrich_answer(message, answer)
         attachments["links"] = links
         attachments["assistant_files"] = self._related_images(message, file_hashes)
-        try:
-            self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
-            self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
-            self.memory.rebuild_index()
-        except Exception:
-            # A generated answer should still reach the UI even if a memory file is temporarily unavailable.
-            pass
+        self._persist_chat_memory(message, answer, chat_id, attachments)
         self._finish_chat(chat_id, answer, paths, attachments)
         return {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}
 
@@ -376,7 +370,7 @@ class SecretaryService:
         plan = self._location_plan(message)
         attachments: dict[str, Any] = {
             "user_files": self._attachment_rows(file_hashes), "assistant_files": [], "links": [],
-            "maps": self._map_attachment(plan), "file_note": file_note.strip(),
+            "maps": self._map_attachment(plan), "warnings": [], "file_note": file_note.strip(),
         }
         with self.database.connect() as db:
             cursor = db.execute(
@@ -402,12 +396,7 @@ class SecretaryService:
             answer, links = self._enrich_answer(message, answer)
             attachments["links"] = links
             attachments["assistant_files"] = self._related_images(message, file_hashes)
-            try:
-                self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
-                self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
-                self.memory.rebuild_index()
-            except Exception:
-                pass
+            self._persist_chat_memory(message, answer, chat_id, attachments)
             self._finish_chat(chat_id, answer, paths, attachments)
             yield {"event": "done", "data": {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}}
         except Exception:
@@ -415,6 +404,16 @@ class SecretaryService:
             if partial:
                 self._finish_chat(chat_id, partial, paths, attachments)
             raise
+
+    def _persist_chat_memory(self, message: str, answer: str, chat_id: int, attachments: dict[str, Any]) -> None:
+        try:
+            self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
+            self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
+            self.memory.rebuild_index()
+        except Exception:
+            attachments.setdefault("warnings", []).append(
+                "回答已生成，但本地记忆写入失败；本轮内容没有被长期记住。请检查 memory 目录权限后重试。"
+            )
 
     def _finish_chat(self, chat_id: int, answer: str, sources: list[str], attachments: Optional[dict[str, Any]] = None) -> None:
         with self.database.connect() as db:

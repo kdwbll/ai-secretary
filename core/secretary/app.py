@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-import shutil
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
@@ -30,7 +29,7 @@ from .storage import LocalStorage
 from .secrets import SecretStore
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
@@ -134,6 +133,37 @@ class LocationReportInput(BaseModel):
 
 class NotificationSettingsInput(BaseModel):
     enabled: bool = False
+
+
+def upload_limit_bytes() -> int:
+    try:
+        megabytes = int(DB.setting("max_upload_mb", "200") or 200)
+    except ValueError:
+        megabytes = 200
+    return max(1, min(megabytes, 2048)) * 1024 * 1024
+
+
+async def save_upload_to_temp(file: UploadFile, suffix: str, limit_bytes: Optional[int] = None) -> Path:
+    limit = limit_bytes if limit_bytes is not None else upload_limit_bytes()
+    total = 0
+    temp = NamedTemporaryFile(suffix=suffix, delete=False)
+    path = Path(temp.name)
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(413, f"文件超过本机上传上限（{limit // 1024 // 1024} MB）")
+            temp.write(chunk)
+        temp.flush()
+        return path
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        temp.close()
 
 
 def sync_email_accounts(refresh: bool = False) -> dict:
@@ -608,9 +638,7 @@ async def health_import(file: UploadFile = File(...)):
     suffix = Path(file.filename or "health-data").suffix.lower()
     if suffix not in {".zip", ".xml", ".csv", ".json"}:
         raise HTTPException(400, "请选择 Apple 健康 XML/ZIP，或小米运动 CSV/JSON/ZIP")
-    with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
-        shutil.copyfileobj(file.file, temp)
-        temp_path = Path(temp.name)
+    temp_path = await save_upload_to_temp(file, suffix)
     try:
         return HEALTH.import_file(temp_path, file.filename or "health-data")
     except (ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
@@ -622,9 +650,7 @@ async def health_import(file: UploadFile = File(...)):
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix
-    with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
-        shutil.copyfileobj(file.file, temp)
-        temp_path = Path(temp.name)
+    temp_path = await save_upload_to_temp(file, suffix)
     try:
         return FILES.ingest(temp_path, file.filename or "upload")
     finally:
