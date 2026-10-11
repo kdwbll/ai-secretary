@@ -56,6 +56,14 @@ class MemoryTests(unittest.TestCase):
         results = self.memory.search("测试")
         self.assertNotIn("broken.md", [item["path"] for item in results])
 
+    def test_current_daily_note_repairs_invalid_utf8_without_blocking_startup(self):
+        daily = self.memory.ensure_daily()
+        path = self.memory.storage.root / daily.path
+        path.write_bytes(path.read_bytes() + b"\n\x96damaged tail")
+        repaired = self.memory.ensure_daily()
+        self.assertIn("damaged tail", repaired.body)
+        self.assertTrue(list(path.parent.glob(path.name + ".invalid-utf8-*.bak")))
+
 
 if __name__ == "__main__":
     unittest.main()

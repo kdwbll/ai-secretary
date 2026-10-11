@@ -89,3 +89,38 @@ class ChatHistoryTests(TestCase):
             context = service._context("我最近要算综测")
             self.assertIn("本科生综合素质评价办法.doc", context)
             self.assertIn("发展性评价包含创新创造与志愿服务", context)
+
+    def test_chat_attachment_is_sent_to_model_and_persisted(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            with service.database.connect() as db:
+                db.execute(
+                    "INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)",
+                    ("doc-hash", "报名须知.docx", "files/2026-10/doc.docx", "2026-10-11T12:00:00", "报名截止日期为十月二十日"),
+                )
+            result = service.chat("帮我看看", file_hashes=["doc-hash"], file_note="重点看截止日期")
+            prompt = service.models.complete.call_args.args[1][0]["content"]
+            self.assertIn("重点看截止日期", prompt)
+            self.assertIn("报名截止日期为十月二十日", prompt)
+            self.assertEqual(result["attachments"]["user_files"][0]["name"], "报名须知.docx")
+            self.assertEqual(service.chat_history()[0]["attachments"]["file_note"], "重点看截止日期")
+
+    def test_photo_question_returns_matching_uploaded_image(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            with service.database.connect() as db:
+                db.execute(
+                    "INSERT INTO files(hash,original_name,stored_path,created_at,extracted_text) VALUES(?,?,?,?,?)",
+                    ("photo-hash", "杭州旅行.jpg", "files/2026-10/photo.jpg", "2026-10-11T12:00:00", "西湖边拍摄的旅行照片"),
+                )
+            result = service.chat("给我看看之前去杭州玩拍的照片")
+            photo = result["attachments"]["assistant_files"][0]
+            self.assertEqual(photo["hash"], "photo-hash")
+            self.assertEqual(photo["kind"], "image")
+
+    def test_apple_account_question_gets_official_link(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            result = service.chat("哪里注册 Apple 账户？")
+            self.assertIn("https://account.apple.com/", result["answer"])
+            self.assertEqual(result["attachments"]["links"][0]["source"], "Apple 官方")

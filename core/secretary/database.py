@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS email_seen (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, user_message TEXT NOT NULL,
   assistant_message TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '[]',
-  provider TEXT, model TEXT
+  provider TEXT, model TEXT, attachments TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS health_samples (
   id INTEGER PRIMARY KEY, recorded_at TEXT NOT NULL, metric TEXT NOT NULL,
@@ -78,6 +78,9 @@ class Database:
             provider_columns = {row[1] for row in db.execute("PRAGMA table_info(providers)")}
             if "consumption_level" not in provider_columns:
                 db.execute("ALTER TABLE providers ADD COLUMN consumption_level TEXT NOT NULL DEFAULT 'medium'")
+            chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_messages)")}
+            if "attachments" not in chat_columns:
+                db.execute("ALTER TABLE chat_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '{}'")
             defaults = {"morning_time": "07:30", "review_time": "22:30", "max_context_files": "5", "usd_cny_rate": "7.20"}
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))

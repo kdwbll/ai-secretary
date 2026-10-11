@@ -44,7 +44,7 @@ class SecretaryService:
                 chosen.append(path)
         return chosen[:limit] or ["me.md", "work-study.md"]
 
-    def _context(self, message: str) -> str:
+    def _context(self, message: str, file_hashes: Optional[list[str]] = None, file_note: str = "") -> str:
         limit = int(self.database.setting("max_context_files", "5") or 5)
         paths = self.choose_context(message, limit)
         for offset in range(3):
@@ -64,7 +64,102 @@ class SecretaryService:
         file_context = self._file_context(message)
         if file_context:
             context += "\n\n" + file_context
+        selected_context = self._selected_file_context(file_hashes or [], file_note)
+        if selected_context:
+            context += "\n\n" + selected_context
+        related_images = self._related_images(message, file_hashes)
+        if related_images:
+            names = "\n".join(f"- {item['name']}（{item['created_at'] or '时间未知'}）" for item in related_images)
+            context += "\n\n## 可在回答下方展示的历史照片候选\n" + names
+            context += "\n这些是按文件名、图片分析文字和上传时间选出的候选；若地点没有明确记录，不要把地点说成已确认事实。"
         return context
+
+    def _selected_file_context(self, file_hashes: list[str], file_note: str = "") -> str:
+        hashes = list(dict.fromkeys(file_hashes))[:10]
+        if not hashes:
+            return ""
+        placeholders = ",".join("?" for _ in hashes)
+        rows = self.database.rows(
+            f"SELECT hash,original_name,extracted_text FROM files WHERE hash IN ({placeholders})",
+            tuple(hashes),
+        )
+        by_hash = {row["hash"]: row for row in rows}
+        sections = ["## 本轮用户明确附加的文件"]
+        if file_note.strip():
+            sections.append("附件说明：" + file_note.strip())
+        for digest in hashes:
+            row = by_hash.get(digest)
+            if row:
+                sections.append(f"### {row['original_name']}\n{row['extracted_text'][:20000] or '原件已保存，但没有提取到可供模型阅读的文字。'}")
+        return "\n\n".join(sections) if len(sections) > 1 else ""
+
+    @staticmethod
+    def _file_kind(name: str) -> str:
+        suffix = Path(name).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif"}:
+            return "image"
+        if suffix in {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}:
+            return "video"
+        return "document"
+
+    def _attachment_rows(self, file_hashes: list[str]) -> list[dict[str, Any]]:
+        hashes = list(dict.fromkeys(file_hashes))[:10]
+        if not hashes:
+            return []
+        placeholders = ",".join("?" for _ in hashes)
+        rows = self.database.rows(
+            f"SELECT hash,original_name,created_at,extracted_text FROM files WHERE hash IN ({placeholders})",
+            tuple(hashes),
+        )
+        by_hash = {row["hash"]: row for row in rows}
+        return [self._attachment_metadata(by_hash[digest]) for digest in hashes if digest in by_hash]
+
+    def _attachment_metadata(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "hash": row["hash"],
+            "name": row["original_name"],
+            "kind": self._file_kind(row["original_name"]),
+            "url": f"/api/files/{row['hash']}/content",
+            "created_at": row.get("created_at", ""),
+            "summary": (row.get("extracted_text") or "")[:240],
+        }
+
+    def _related_images(self, message: str, exclude: Optional[list[str]] = None) -> list[dict[str, Any]]:
+        if not any(word in message for word in ("照片", "图片", "相片", "相册", "拍的", "拍过")):
+            return []
+        excluded = set(exclude or [])
+        terms = {
+            message[index:index + 2]
+            for index in range(max(0, len(message) - 1))
+            if not re.search(r"[\s，。！？!?]", message[index:index + 2])
+        }
+        rows = self.database.rows(
+            "SELECT hash,original_name,created_at,extracted_text FROM files ORDER BY created_at DESC LIMIT 100"
+        )
+        images = [row for row in rows if row["hash"] not in excluded and self._file_kind(row["original_name"]) == "image"]
+        scored = []
+        for position, row in enumerate(images):
+            haystack = row["original_name"] + "\n" + (row.get("extracted_text") or "")
+            score = sum(1 for term in terms if term in haystack)
+            scored.append((score, -position, row))
+        matches = [row for score, _, row in sorted(scored, reverse=True) if score > 0]
+        chosen = matches[:6] if matches else images[:6]
+        return [self._attachment_metadata(row) for row in chosen]
+
+    @staticmethod
+    def _enrich_answer(message: str, answer: str) -> tuple[str, list[dict[str, str]]]:
+        links: list[dict[str, str]] = []
+        asks_for_apple_account = (
+            any(word in message.lower() for word in ("apple", "苹果"))
+            and any(word in message for word in ("账户", "账号", "id", "ID"))
+            and any(word in message for word in ("注册", "创建", "哪里", "网址", "链接"))
+        )
+        if asks_for_apple_account:
+            url = "https://account.apple.com/"
+            links.append({"title": "创建或管理 Apple 账户", "url": url, "source": "Apple 官方"})
+            if "account.apple.com" not in answer:
+                answer = answer.rstrip() + f"\n\n[打开 Apple 官方账户页面]({url})"
+        return answer, links
 
     def _file_context(self, message: str) -> str:
         aliases = {"综测": ("综合素质", "评价办法"), "体检": ("体检", "检查报告"), "简历": ("简历", "履历")}
@@ -97,8 +192,12 @@ class SecretaryService:
             lines.append("- 暂无已导入的健康样本")
         return "\n".join(lines)
 
-    def chat(self, message: str, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
+    def chat(self, message: str, provider: Optional[str] = None, model: Optional[str] = None,
+             file_hashes: Optional[list[str]] = None, file_note: str = "") -> dict[str, Any]:
         message = message.strip()
+        file_hashes = list(dict.fromkeys(file_hashes or []))[:10]
+        user_files = self._attachment_rows(file_hashes)
+        attachments: dict[str, Any] = {"user_files": user_files, "assistant_files": [], "links": [], "file_note": file_note.strip()}
         with self.database.connect() as db:
             cursor = db.execute(
                 "INSERT INTO chat_messages(created_at,user_message,provider,model) VALUES(datetime('now','localtime'),?,?,?)",
@@ -110,16 +209,17 @@ class SecretaryService:
             phrase = re.sub(r"^(?:请)?(?:忘掉|忘记)\s*", "", message).strip("。！! ")
             count = self.memory.forget(phrase)
             result = {"id": chat_id, "answer": f"已从记忆中删除与“{phrase}”有关的 {count} 条内容，并加入禁止记录规则。", "sources": ["me.md"]}
-            self._finish_chat(chat_id, result["answer"], result["sources"])
+            self._finish_chat(chat_id, result["answer"], result["sources"], attachments)
+            result["attachments"] = attachments
             return result
 
         try:
-            context = self._context(message)
+            context = self._context(message, file_hashes, file_note)
             paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
         except Exception:
             answer = "这条消息已保存，但本地记忆暂时无法读取，因此无法完成本次回答。请检查记忆文件后重试。"
-            self._finish_chat(chat_id, answer, [])
-            return {"id": chat_id, "answer": answer, "sources": []}
+            self._finish_chat(chat_id, answer, [], attachments)
+            return {"id": chat_id, "answer": answer, "sources": [], "attachments": attachments}
         try:
             system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
             answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)
@@ -127,6 +227,9 @@ class SecretaryService:
             answer = self._local_answer(message, context, paths)
         if not isinstance(answer, str) or not answer.strip():
             answer = self._local_answer(message, context, paths)
+        answer, links = self._enrich_answer(message, answer)
+        attachments["links"] = links
+        attachments["assistant_files"] = self._related_images(message, file_hashes)
         try:
             self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
             self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
@@ -134,23 +237,24 @@ class SecretaryService:
         except Exception:
             # A generated answer should still reach the UI even if a memory file is temporarily unavailable.
             pass
-        self._finish_chat(chat_id, answer, paths)
-        return {"id": chat_id, "answer": answer, "sources": paths}
+        self._finish_chat(chat_id, answer, paths, attachments)
+        return {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}
 
-    def _finish_chat(self, chat_id: int, answer: str, sources: list[str]) -> None:
+    def _finish_chat(self, chat_id: int, answer: str, sources: list[str], attachments: Optional[dict[str, Any]] = None) -> None:
         with self.database.connect() as db:
             db.execute(
-                "UPDATE chat_messages SET assistant_message=?,sources=? WHERE id=?",
-                (answer, json.dumps(sources, ensure_ascii=False), chat_id),
+                "UPDATE chat_messages SET assistant_message=?,sources=?,attachments=? WHERE id=?",
+                (answer, json.dumps(sources, ensure_ascii=False), json.dumps(attachments or {}, ensure_ascii=False), chat_id),
             )
 
     def chat_history(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.database.rows(
-            "SELECT id,created_at,user_message,assistant_message,sources,provider,model FROM chat_messages ORDER BY id DESC LIMIT ?",
+            "SELECT id,created_at,user_message,assistant_message,sources,provider,model,attachments FROM chat_messages ORDER BY id DESC LIMIT ?",
             (max(1, min(limit, 500)),),
         )
         for row in rows:
             row["sources"] = json.loads(row["sources"] or "[]")
+            row["attachments"] = json.loads(row["attachments"] or "{}")
         return rows
 
     def delete_chat(self, chat_id: int, delete_memory: bool = False) -> dict[str, Any]:

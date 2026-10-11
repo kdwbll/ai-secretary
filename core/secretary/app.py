@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import shutil
 import zipfile
@@ -13,7 +14,7 @@ from typing import Optional
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .database import Database
 from .connectors import ImapConnector
@@ -26,7 +27,7 @@ from .service import SecretaryService
 from .storage import LocalStorage
 
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.5.0"
 DB = Database(ROOT / "data" / "second-brain.db")
 MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB)
@@ -40,6 +41,8 @@ class ChatInput(BaseModel):
     message: str
     provider: Optional[str] = None
     model: Optional[str] = None
+    file_hashes: list[str] = Field(default_factory=list)
+    file_note: str = ""
 
 
 class ChatDeleteInput(BaseModel):
@@ -154,7 +157,7 @@ def health():
 
 @app.post("/api/chat")
 def chat(body: ChatInput):
-    return SERVICE.chat(body.message, body.provider, body.model)
+    return SERVICE.chat(body.message, body.provider, body.model, body.file_hashes, body.file_note)
 
 
 @app.get("/api/chats")
@@ -396,6 +399,19 @@ async def upload(file: UploadFile = File(...)):
 def file_list(limit: int = 100):
     limit = max(1, min(limit, 500))
     return {"files": DB.rows("SELECT hash,original_name,stored_path,created_at,extracted_text FROM files ORDER BY created_at DESC LIMIT ?", (limit,))}
+
+
+@app.get("/api/files/{digest}/content")
+def file_content(digest: str):
+    rows = DB.rows("SELECT original_name,stored_path FROM files WHERE hash=?", (digest,))
+    if not rows:
+        raise HTTPException(404, "文件不存在")
+    path = (ROOT / rows[0]["stored_path"]).resolve()
+    files_root = (ROOT / "files").resolve()
+    if files_root not in path.parents or not path.is_file():
+        raise HTTPException(404, "归档原件不存在")
+    media_type = mimetypes.guess_type(rows[0]["original_name"])[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.delete("/api/files/{digest}")

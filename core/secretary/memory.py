@@ -97,6 +97,12 @@ class MemoryEngine:
             doc = MemoryDocument(path, {"id": f"daily-{day.isoformat()}", "type": "daily", "related": []}, f"# {day.isoformat()}\n\n## 流水\n")
             self.save(doc, "创建每日日志", "system")
             return self.parse(path)
+        except UnicodeDecodeError:
+            repair = getattr(self.storage, "repair_utf8", None)
+            if not repair:
+                raise
+            repair(path)
+            return self.parse(path)
 
     def append_daily(self, text: str, source: str = "对话", inferred: bool = False) -> None:
         doc = self.ensure_daily()

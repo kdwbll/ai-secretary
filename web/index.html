@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f3f0e8">
   <title>第二大脑 · 本地 AI 助理</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=0.4.1">
+  <link rel="stylesheet" href="/assets/styles.css?v=0.5.0">
 </head>
 <body>
   <div class="shell">
@@ -43,7 +43,12 @@
         <div class="chat-panel">
           <div class="section-head chat-heading"><div><span class="rule"></span><h3>和你的第二大脑聊聊</h3></div><div class="chat-actions"><button id="history-open" class="secondary small" type="button">聊天记录</button><label class="model-picker">本轮模型<select id="chat-model"><option value="">默认 · 文字处理路由</option></select></label></div></div>
           <div id="messages" class="messages"><div class="message assistant">有什么正在占用你的注意力？告诉我，我会结合你的记忆一起梳理。</div></div>
-          <form id="chat-form"><textarea id="chat-input" rows="2" placeholder="输入问题，或告诉我一件值得记住的事……"></textarea><button class="send" aria-label="发送">↑</button></form>
+          <div id="chat-file-tray" class="chat-file-tray hidden"></div>
+          <form id="chat-form">
+            <label class="attach-button" title="添加图片、视频或文档" aria-label="添加附件">＋<input id="chat-file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json,.zip" multiple hidden></label>
+            <div class="chat-compose"><textarea id="chat-input" rows="2" placeholder="输入问题，或告诉我一件值得记住的事……"></textarea><input id="chat-file-note" class="hidden" placeholder="补充附件说明（可选，例如：这是杭州旅行照片）"></div>
+            <button class="send" aria-label="发送">↑</button>
+          </form>
         </div>
         <aside class="context-panel"><p class="card-label">本次参考</p><div id="sources"><span>me.md</span><span>work-study.md</span></div><small>每次仅取最相关的记忆与最近 3 天流水。</small></aside>
       </section>
@@ -101,6 +106,6 @@
   <dialog id="interview-dialog"><button class="dialog-close" aria-label="关闭">×</button><p class="card-label" id="interview-domain">冷启动采访</p><div class="progress"><i></i></div><h2 id="interview-question">加载中…</h2><textarea id="interview-answer" rows="4" placeholder="可以跳过，也可以只说最重要的部分"></textarea><div class="dialog-actions"><button id="skip-question" class="text-button">跳过</button><button id="next-question" class="primary">下一题 →</button></div></dialog>
   <dialog id="history-dialog" class="history-dialog"><button id="history-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">聊天记录</p><h2>最近的对话</h2><p class="muted">可以只删除对话；勾选后会同时清理这条对话新写入的日志和事实，不影响其他对话。</p><div id="chat-history" class="chat-history"></div></dialog>
   <div id="toast" role="status"></div>
-  <script src="/assets/app.js?v=0.4.1"></script>
+  <script src="/assets/app.js?v=0.5.0"></script>
 </body>
 </html>

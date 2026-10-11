@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -34,6 +35,16 @@ class LocalStorage(Storage):
 
     def read_text(self, relative: str) -> str:
         return self._path(relative).read_text(encoding="utf-8")
+
+    def repair_utf8(self, relative: str) -> str:
+        """Keep a byte-for-byte backup, then normalize a damaged text file to UTF-8."""
+        path = self._path(relative)
+        raw = path.read_bytes()
+        backup = path.with_name(path.name + ".invalid-utf8-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".bak")
+        backup.write_bytes(raw)
+        content = raw.decode("utf-8", errors="replace")
+        self.write_text(relative, content)
+        return content
 
     def write_text(self, relative: str, content: str) -> None:
         path = self._path(relative)
