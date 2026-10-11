@@ -51,6 +51,11 @@ class MemoryTests(unittest.TestCase):
         self.memory.undo(mutation)
         self.assertEqual(self.memory.storage.read_text("finance.md"), before)
 
+    def test_search_skips_a_non_utf8_note(self):
+        (self.memory.storage.root / "broken.md").write_bytes(b"\x96not utf8")
+        results = self.memory.search("测试")
+        self.assertNotIn("broken.md", [item["path"] for item in results])
+
 
 if __name__ == "__main__":
     unittest.main()

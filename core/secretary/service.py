@@ -51,7 +51,14 @@ class SecretaryService:
             daily = f"daily/{(date.today() - timedelta(days=offset)).isoformat()}.md"
             if daily in set(self.memory.storage.list(".md")):
                 paths.append(daily)
-        context = "\n\n".join(f"## {path}\n{self.memory.storage.read_text(path)}" for path in dict.fromkeys(paths))
+        sections = []
+        for path in dict.fromkeys(paths):
+            try:
+                sections.append(f"## {path}\n{self.memory.storage.read_text(path)}")
+            except (FileNotFoundError, UnicodeDecodeError):
+                # One incomplete or malformed note should not block the whole assistant.
+                continue
+        context = "\n\n".join(sections)
         if any(word in message for word in ("健康数据", "步数", "心率", "睡眠", "体重", "活动能量", "运动数据")):
             context += "\n\n" + self._health_context()
         file_context = self._file_context(message)
@@ -106,8 +113,13 @@ class SecretaryService:
             self._finish_chat(chat_id, result["answer"], result["sources"])
             return result
 
-        context = self._context(message)
-        paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
+        try:
+            context = self._context(message)
+            paths = self.choose_context(message, int(self.database.setting("max_context_files", "5") or 5))
+        except Exception:
+            answer = "这条消息已保存，但本地记忆暂时无法读取，因此无法完成本次回答。请检查记忆文件后重试。"
+            self._finish_chat(chat_id, answer, [])
+            return {"id": chat_id, "answer": answer, "sources": []}
         try:
             system = (self.prompt_dir / "chat.md").read_text(encoding="utf-8")
             answer = self.models.complete("smart", [{"role": "system", "content": system + "\n\n用户记忆：\n" + context}, {"role": "user", "content": message}], provider=provider, model=model)

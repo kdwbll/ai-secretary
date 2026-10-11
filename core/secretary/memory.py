@@ -185,7 +185,11 @@ class MemoryEngine:
         terms = [term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if term]
         results = []
         for path in self.storage.list(".md"):
-            text = self.storage.read_text(path)
+            try:
+                text = self.storage.read_text(path)
+            except UnicodeDecodeError:
+                # A damaged external import must not make all chat/search unavailable.
+                continue
             score = sum(text.lower().count(term) for term in terms)
             if score:
                 lines = [line for line in text.splitlines() if any(term in line.lower() for term in terms)]
