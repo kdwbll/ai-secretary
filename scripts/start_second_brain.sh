@@ -9,6 +9,7 @@ url="http://127.0.0.1:$port"
 health_url="$url/api/health"
 log_file="$project_dir/data/second-brain.log"
 pid_file="$project_dir/data/second-brain-$port.pid"
+expected_version=$(/usr/bin/sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' "$project_dir/core/secretary/app.py" | /usr/bin/head -n 1)
 
 show_error() {
   /usr/bin/osascript -e "display dialog \"$1\" with title \"第二大脑\" buttons {\"知道了\"} default button 1 with icon stop" >/dev/null 2>&1 || true
@@ -20,9 +21,27 @@ open_page() {
   fi
 }
 
-if /usr/bin/curl --silent --fail --max-time 2 "$health_url" >/dev/null 2>&1; then
-  open_page
-  exit 0
+health_payload=$(/usr/bin/curl --silent --fail --max-time 2 "$health_url" 2>/dev/null || true)
+if [[ -n "$health_payload" ]]; then
+  running_version=$(printf '%s' "$health_payload" | /usr/bin/sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+  if [[ -n "$expected_version" && "$running_version" == "$expected_version" ]]; then
+    open_page
+    exit 0
+  fi
+
+  # A previous release can otherwise keep serving stale routes and assets forever.
+  listener_pid=$(/usr/sbin/lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | /usr/bin/head -n 1)
+  if [[ -z "$listener_pid" ]]; then
+    show_error "检测到旧服务，但无法确定其进程。请关闭占用 $port 端口的程序后重试。"
+    exit 1
+  fi
+  /bin/kill "$listener_pid" >/dev/null 2>&1 || true
+  for _ in {1..30}; do
+    if ! /bin/kill -0 "$listener_pid" >/dev/null 2>&1; then
+      break
+    fi
+    /bin/sleep 0.1
+  done
 fi
 
 if [[ ! -x "$python_bin" ]]; then
@@ -31,7 +50,7 @@ if [[ ! -x "$python_bin" ]]; then
 fi
 
 /bin/mkdir -p "$project_dir/data"
-/usr/bin/nohup /usr/bin/env SECOND_BRAIN_ROOT="$project_dir" PYTHONUNBUFFERED=1 \
+/usr/bin/nohup /usr/bin/env -u CODEX_SANDBOX_NETWORK_DISABLED SECOND_BRAIN_ROOT="$project_dir" PYTHONUNBUFFERED=1 \
   "$python_bin" -m uvicorn core.secretary.app:app --app-dir "$project_dir" \
   --host 0.0.0.0 --port "$port" >>"$log_file" 2>&1 &
 server_pid=$!

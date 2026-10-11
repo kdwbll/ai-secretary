@@ -6,6 +6,7 @@ from datetime import date
 
 from core.secretary.database import Database
 from core.secretary.memory import MemoryEngine
+from core.secretary.models import ModelNetworkError
 from core.secretary.service import SecretaryService
 from core.secretary.storage import LocalStorage
 
@@ -155,3 +156,15 @@ class ChatHistoryTests(TestCase):
             self.assertIn("记忆写入失败", result["attachments"]["warnings"][0])
             history = service.chat_history()
             self.assertEqual(history[0]["attachments"]["warnings"], result["attachments"]["warnings"])
+
+    def test_non_stream_failure_is_persisted_instead_of_staying_unfinished(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.models.complete.side_effect = ModelNetworkError("offline")
+
+            with self.assertRaises(ModelNetworkError):
+                service.chat("帮我总结今天")
+
+            history = service.chat_history()
+            self.assertEqual(history[0]["assistant_message"], ModelNetworkError.user_message)
+            self.assertEqual(history[0]["attachments"]["warnings"], [ModelNetworkError.user_message])
