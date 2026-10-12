@@ -37,4 +37,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_tag="${GITHUB_REF_NAME#mac-}"
+          ready=0
+          for attempt in {1..40}; do
+            if gh release view "$release_tag" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 15
+          done
+          test "$ready" = 1
           gh release upload "$release_tag" dist-release/*.dmg

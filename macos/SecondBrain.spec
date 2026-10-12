@@ -20,4 +20,5 @@ coll = COLLECT(exe, a.binaries, a.datas, name="SecondBrain")
 app = BUNDLE(coll, name="SecondBrain.app", icon=str(root / "macos/SecondBrain.icns"),
              bundle_identifier="com.secondbrain.desktop", version=version,
              info_plist={"CFBundleShortVersionString": version,
+                         "LSMinimumSystemVersion": "15.0",
                          "NSHighResolutionCapable": True, "LSUIElement": True})
