@@ -135,3 +135,7 @@ Web 左侧的“健康”页会在本机展示最近 14 天的步数、心率、
 - 本阶段按规格不做记忆加密；`Storage` 抽象允许后续替换为加密存储。
 
 更详细的取舍见 [docs/decisions.md](docs/decisions.md)。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE) 授权。Copyright © 2026 kdwbll。
