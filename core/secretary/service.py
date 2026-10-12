@@ -651,6 +651,27 @@ class SecretaryService:
                 row["attachments"]["assistant_files"] = []
         return rows
 
+    def chat_state(self) -> dict[str, object]:
+        """Return a tiny fingerprint for inexpensive browser refresh checks.
+
+        The chat screen used to repeatedly transfer and compare every message
+        attachment.  The most recent row is the only one that can change while
+        a response is streaming, so its identifiers and field sizes are enough
+        to decide whether the browser needs the full conversation payload.
+        """
+        rows = self.database.rows(
+            "SELECT id, created_at, length(user_message) AS user_size, "
+            "length(assistant_message) AS answer_size, length(attachments) AS attachment_size "
+            "FROM chat_messages ORDER BY id DESC LIMIT 1"
+        )
+        if not rows:
+            return {"signature": "empty"}
+        row = rows[0]
+        signature = ":".join(str(row[key] or 0) for key in (
+            "id", "created_at", "user_size", "answer_size", "attachment_size",
+        ))
+        return {"signature": signature}
+
     def delete_chat(self, chat_id: int, delete_memory: bool = False) -> dict[str, Any]:
         if not self.database.rows("SELECT id FROM chat_messages WHERE id=?", (chat_id,)):
             raise KeyError("聊天记录不存在")

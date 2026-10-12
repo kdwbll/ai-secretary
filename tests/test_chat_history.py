@@ -46,6 +46,16 @@ class ChatHistoryTests(TestCase):
             service.delete_chat(result["id"], delete_memory=False)
             self.assertIn(f"对话 #{result['id']}", service.memory.storage.read_text("habits.md"))
 
+    def test_chat_state_changes_when_the_latest_conversation_changes(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            self.assertEqual(service.chat_state()["signature"], "empty")
+            service.chat("帮我安排今天")
+            signature = service.chat_state()["signature"]
+            self.assertNotEqual(signature, "empty")
+            service.chat("再补充一项")
+            self.assertNotEqual(service.chat_state()["signature"], signature)
+
     def test_existing_facts_mark_profile_as_completed(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))
