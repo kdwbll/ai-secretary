@@ -278,7 +278,20 @@ fun SecondBrainApp(intent: Intent?) {
                             notice = "正在发送并等待回复…"
                             scope.launch {
                                 runCatching { ApiClient.sendChat(server, token, message) }
-                                    .onSuccess { notice = "发送成功，电脑端也会同步显示"; chats = ApiClient.chats(server, token) }
+                                    .onSuccess {
+                                        notice = "发送成功，电脑端也会同步显示"
+                                        val updated = ApiClient.chats(server, token)
+                                        chats = updated
+                                        // A map attachment can be created by this very reply.  Fetch the
+                                        // computer's AMap configuration at the same time; otherwise the
+                                        // card incorrectly remains in the "no key" state until a later
+                                        // manual refresh.
+                                        if (updated.any { it.maps.isNotEmpty() }) {
+                                            runCatching { ApiClient.mapConfig(server, token) }
+                                                .onSuccess { mapConfig = it }
+                                                .onFailure { notice = "地图配置读取失败：${it.message}" }
+                                        }
+                                    }
                                     .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); notice = "电脑暂时不可达，消息已进入离线队列" }
                                 sending = false
                             }
