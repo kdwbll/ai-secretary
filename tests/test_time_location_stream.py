@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 from core.secretary.database import Database
@@ -50,6 +50,27 @@ class TimeLocationStreamTests(TestCase):
             self.assertIn("前端会在这条回答下方自动插入高德地图卡片", context)
             self.assertIn("未配置高德 Web 服务 API Key", context)
             self.assertEqual(service._map_attachment(plan)[0]["mode"], "nearby")
+
+    def test_generic_current_location_uses_reverse_geocoding_for_model_context(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.secret_store = Mock()
+            service.secret_store.decrypt.return_value = "web-service-key"
+            service.database.set_setting("map_web_service_key", "encrypted-key")
+            with service.database.connect() as db:
+                db.execute(
+                    "INSERT INTO locations(source,label,latitude,longitude,enabled,updated_at) VALUES(?,?,?,?,?,?)",
+                    ("android", "Android", 30.765198, 103.981348, 1, "2026-10-12 11:42:35"),
+                )
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            response.read.return_value = '{"status":"1","regeocode":{"formatted_address":"四川省成都市郫都区犀浦街道", "pois":[{"name":"西南交通大学犀浦校区","distance":"120"}]}}'.encode()
+            with patch("core.secretary.service.urlopen", return_value=response) as request:
+                context = service._amap_poi_context({"query": "我的位置", "mode": "nearby"})
+            self.assertIn("四川省成都市郫都区犀浦街道", context)
+            self.assertIn("西南交通大学犀浦校区（120 米）", context)
+            self.assertIn("v3/geocode/regeo", request.call_args.args[0])
 
     def test_stream_persists_title_and_is_searchable(self):
         with TemporaryDirectory() as directory:

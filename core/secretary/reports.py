@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from collections import Counter
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -22,6 +23,21 @@ class ReportService:
         lines = [f"# {today.isoformat()} 早报", "", "## 今天最重要的事", "- 先完成一个最关键且有截止时间的动作。"]
         if pickups:
             lines += ["", "## 待办提醒", f"- 有 {len(pickups)} 个快递待取，请查看今日流水中的取件码。"]
+        calendar_items = []
+        for event in self.database.rows("SELECT payload FROM events WHERE source='calendar' AND status='pending' ORDER BY id DESC LIMIT 500"):
+            try:
+                payload = json.loads(event["payload"] or "{}")
+                start = datetime.fromisoformat(payload["start_at"])
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+            if start.date() == today:
+                calendar_items.append((start, payload))
+        if calendar_items:
+            lines += ["", "## 今日日程"]
+            for start, item in sorted(calendar_items):
+                time = "全天" if item.get("all_day") else start.strftime("%H:%M")
+                place = f"（{item['location']}）" if item.get("location") else ""
+                lines.append(f"- {time} {item.get('title') or '（无标题日程）'}{place}")
         projects = self.memory.storage.list(".md")
         project_count = sum(path.startswith("projects/") for path in projects)
         if project_count:
