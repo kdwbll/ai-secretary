@@ -26,7 +26,7 @@ if not "%EXIT_CODE%"=="0" (
   exit /b %EXIT_CODE%
 )
 echo.
-echo 安装完成。以后双击“启动第二大脑-Windows.cmd”即可使用。
+echo 安装完成。以后双击 start-second-brain-windows.cmd 即可使用。
 popd
 pause
 endlocal

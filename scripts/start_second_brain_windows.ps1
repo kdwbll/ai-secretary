@@ -15,7 +15,7 @@ try {
     $BrowserUrl = "http://127.0.0.1:$Port"
 
     if (-not (Test-Path $Python)) {
-        Write-Host "尚未安装项目运行环境。请先双击“安装第二大脑-Windows.cmd”。" -ForegroundColor Yellow
+        Write-Host "尚未安装项目运行环境。请先双击 install-second-brain-windows.cmd。" -ForegroundColor Yellow
         exit 2
     }
 

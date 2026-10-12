@@ -6,8 +6,8 @@
 
 1. 安装 64 位 Python 3.11 或更高版本，安装时勾选 **Add Python to PATH**。
 2. 下载并解压本分支，路径尽量简短，例如 `D:\AI\ai-secretary`。
-3. 双击 `安装第二大脑-Windows.cmd`。它会创建 `.venv`、安装依赖、初始化数据，并在桌面创建“第二大脑”快捷方式。
-4. 双击桌面快捷方式或 `启动第二大脑-Windows.cmd`。
+3. 双击 `install-second-brain-windows.cmd`。它会创建 `.venv`、安装依赖、初始化数据，并在桌面创建 `SecondBrain` 快捷方式。
+4. 双击桌面快捷方式或 `start-second-brain-windows.cmd`。
 
 启动器会等待服务真正可用后再打开 `http://127.0.0.1:8765`。服务已运行时重复双击不会开启第二份进程。
 

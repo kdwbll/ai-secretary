@@ -43,10 +43,10 @@ try {
     if ([string]::IsNullOrWhiteSpace($Desktop)) {
         throw "无法确定 Windows 桌面目录，未创建快捷方式。"
     }
-    $ShortcutPath = Join-Path $Desktop "第二大脑.lnk"
+$ShortcutPath = Join-Path $Desktop "SecondBrain.lnk"
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-    $Shortcut.TargetPath = Join-Path $ProjectDir "启动第二大脑-Windows.cmd"
+$Shortcut.TargetPath = Join-Path $ProjectDir "start-second-brain-windows.cmd"
     $Shortcut.WorkingDirectory = $ProjectDir
     $Shortcut.Description = "启动本地第二大脑 AI 助理"
     $Shortcut.Save()
