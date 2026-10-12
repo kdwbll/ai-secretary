@@ -23,7 +23,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
         val body = json.toRequestBody("application/json".toMediaType())
         return try {
             OkHttpClient().newCall(Request.Builder().url("$server$endpoint").header("Authorization", "Bearer $token").post(body).build()).execute().use { response ->
-                if (response.isSuccessful) Result.success() else if (response.code == 401) Result.failure() else Result.retry()
+                val result = if (response.isSuccessful) Result.success() else if (response.code == 401) Result.failure() else Result.retry()
+                if (kind == "notification" && response.isSuccessful) {
+                    applicationContext.getSharedPreferences("second_brain", Context.MODE_PRIVATE).edit()
+                        .putLong("notification_last_uploaded_at", System.currentTimeMillis()).apply()
+                }
+                result
             }
         } catch (_: Exception) {
             Result.retry()
