@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f3f0e8">
   <title>第二大脑 · 本地 AI 助理</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=0.7.1">
+  <link rel="stylesheet" href="/assets/styles.css?v=0.8.0">
 </head>
 <body>
   <div class="shell">
@@ -23,7 +23,7 @@
     </aside>
 
     <main>
-      <header><button class="mobile-menu" aria-label="打开菜单">☰</button><div><p id="eyebrow">2026 · 今天</p><h1 id="page-title">早上好。</h1></div><div class="status"><span></span>核心服务在线</div></header>
+      <header><button class="mobile-menu" aria-label="打开菜单">☰</button><div><p id="eyebrow">2026 · 今天</p><h1 id="page-title">早上好。</h1></div><div class="header-meta"><span id="app-version" class="version-badge">v—</span><div id="service-status" class="status" role="status"><span></span><b>正在检查服务</b></div></div></header>
 
       <section id="today" class="view active">
         <div class="hero-grid">
@@ -95,6 +95,7 @@
           <article class="setting-card"><p class="card-label">05 · 联网搜索</p><h2>中国大陆网络优先</h2><p class="muted">默认使用博查中文网页搜索。只有明确要求搜索，或询问新闻、实时价格、商品优惠等内容时，才会发送本轮问题；普通聊天和本地记忆整理不会联网。</p><form id="web-search-form"><label class="toggle-label"><input id="web-search-enabled" type="checkbox"> 开启按需联网搜索</label><label>搜索服务<select id="web-search-provider"><option value="bocha">博查 Web Search API（国内推荐）</option><option value="searxng">自托管 SearXNG</option></select></label><label>博查 Web Search API Key<input id="web-search-key" type="password" autocomplete="off" placeholder="仅在本机加密保存"></label><label>SearXNG 地址<input id="searxng-url" type="url" placeholder="例如 http://127.0.0.1:8080"></label><button class="primary" type="submit">保存联网设置</button></form><div id="web-search-status" class="connection-status">联网搜索未读取</div></article>
           <article class="setting-card"><p class="card-label">06 · 设备安全</p><h2>配对手机</h2><p class="muted">局域网设备必须先配对才能读取记忆、会话和文件。配对码仅 5 分钟有效且只能使用一次。</p><button id="create-pairing-code" class="primary" type="button">生成 6 位配对码</button><div id="pairing-code" class="pairing-code hidden" aria-live="polite"></div><div id="paired-devices" class="provider-list"><p class="muted">正在读取已配对设备…</p></div></article>
           <article class="setting-card"><p class="card-label">07 · 短信与通知</p><h2>由 Android 手机采集</h2><ol class="steps"><li>安装 Android 伴侣 App。</li><li>手机与电脑连接同一可信 Wi‑Fi。</li><li>在 App 中填入电脑局域网地址和配对码。</li><li>明确授予短信和通知读取权限。</li></ol><p class="muted">短信先在手机离线排队，连上电脑后携带设备令牌同步；验证码和营销短信会自动忽略。</p><label class="toggle-label"><input id="notifications-enabled" type="checkbox"> 推送早报、取件码和复盘通知</label><label>外观<select id="theme-select"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label></article>
+          <article class="setting-card service-card"><p class="card-label">08 · 核心服务</p><h2>本机运行状态</h2><p id="service-description" class="muted">正在读取服务状态…</p><div class="service-actions"><button id="pause-service" class="secondary" type="button">暂停服务</button><button id="terminate-service" class="danger-button" type="button">终止服务</button></div><p class="muted service-note">暂停会停止聊天、同步与定时任务，但可随时恢复；终止会关闭后端，需使用桌面启动器再次启动。</p></article>
           <article class="setting-card usage-card">
             <div class="usage-heading"><div><p class="card-label">Token 活动</p><h2>模型使用情况</h2></div><div class="usage-modes" role="group" aria-label="Token 活动统计方式"><button class="usage-mode active" data-mode="daily" type="button">每天</button><button class="usage-mode" data-mode="weekly" type="button">每周</button><button class="usage-mode" data-mode="cumulative" type="button">累计总量</button></div></div>
             <div id="token-activity" class="token-activity" aria-live="polite"><p class="muted">正在读取 Token 活动…</p></div>
@@ -109,6 +110,6 @@
   <dialog id="interview-dialog"><button class="dialog-close" aria-label="关闭">×</button><p class="card-label" id="interview-domain">冷启动采访</p><div class="progress"><i></i></div><h2 id="interview-question">加载中…</h2><textarea id="interview-answer" rows="4" placeholder="可以跳过，也可以只说最重要的部分"></textarea><div class="dialog-actions"><button id="skip-question" class="text-button">跳过</button><button id="next-question" class="primary">下一题 →</button></div></dialog>
   <dialog id="history-dialog" class="history-dialog"><button id="history-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">聊天记录</p><h2>最近的对话</h2><div class="search-wrap history-search"><input id="history-search" placeholder="搜索标题或对话内容…"><button id="history-search-button">⌕</button></div><p class="muted">可以只删除对话；勾选后会同时清理这条对话新写入的日志和事实，不影响其他对话。</p><div id="chat-history" class="chat-history"></div></dialog>
   <div id="toast" role="status"></div>
-  <script src="/assets/app.js?v=0.7.7"></script>
+  <script src="/assets/app.js?v=0.8.0"></script>
 </body>
 </html>

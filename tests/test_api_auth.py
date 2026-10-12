@@ -40,3 +40,16 @@ class ApiAuthenticationTests(TestCase):
     def test_remote_cannot_generate_pairing_code(self):
         remote = TestClient(app_module.app, client=("192.168.1.50", 50001))
         self.assertEqual(remote.post("/api/auth/pairing-code").status_code, 401)
+
+    def test_local_service_can_pause_and_resume_writes(self):
+        app_module.RUNTIME.resume()
+        local = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        try:
+            token = local.get("/api/auth/local-token").json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            self.assertEqual(local.get("/api/service/status", headers=headers).json()["state"], "running")
+            self.assertEqual(local.post("/api/service/pause", headers=headers).json()["state"], "paused")
+            self.assertEqual(local.post("/api/chat", headers=headers, json={"message": "测试"}).status_code, 423)
+            self.assertEqual(local.post("/api/service/resume", headers=headers).json()["state"], "running")
+        finally:
+            app_module.RUNTIME.resume()

@@ -11,6 +11,12 @@ function toast(message){const el=$('#toast');el.textContent=message;el.classList
 async function ensureAccessToken(){if(accessToken)return accessToken;const response=await fetch('/api/auth/local-token',{credentials:'same-origin'});if(!response.ok)throw new Error('本机访问令牌初始化失败');accessToken=(await response.json()).token;sessionStorage.setItem('second_brain_token',accessToken);return accessToken}
 async function api(path, options={}){const token=await ensureAccessToken();const response=await fetch(path,{credentials:'same-origin',headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),'Authorization':`Bearer ${token}`,...(options.headers||{})},...options});if(!response.ok){const body=await response.json().catch(()=>({detail:'请求失败'})),detail=body.detail,message=typeof detail==='object'?(detail.message||'请求失败'):detail;const error=new Error(message||'请求失败');if(typeof detail==='object')Object.assign(error,detail);throw error}return response.json()}
 
+const serviceLabels={running:'核心服务在线',paused:'核心服务已暂停',terminating:'核心服务正在终止',offline:'核心服务已终止'};
+function renderServiceStatus(data){const state=data?.state||'offline',label=serviceLabels[state]||'核心服务状态未知',status=$('#service-status'),version=$('#app-version'),description=$('#service-description'),pause=$('#pause-service'),terminate=$('#terminate-service'),canControl=Boolean(data?.can_control);status.dataset.state=state;status.querySelector('b').textContent=label;version.textContent=data?.version?`v${data.version}`:'v—';if(description)description.textContent=state==='running'?'服务正在本机运行，可安全处理聊天、同步与定时任务。':state==='paused'?'服务已暂停：聊天、手机同步、上传和定时任务均已停止。':state==='terminating'?'正在关闭服务；网页将很快显示为离线。':'服务未运行。请使用桌面启动器再次启动。';if(pause){pause.disabled=!canControl||state==='terminating'||state==='offline';pause.textContent=state==='paused'?'恢复服务':'暂停服务';pause.dataset.action=state==='paused'?'resume':'pause'}if(terminate)terminate.disabled=!canControl||state==='terminating'||state==='offline'}
+async function loadServiceStatus(){try{renderServiceStatus(await api('/api/service/status'))}catch(_){renderServiceStatus(null)}}
+$('#pause-service').onclick=async()=>{const button=$('#pause-service'),action=button.dataset.action||'pause';button.disabled=true;try{const state=await api(`/api/service/${action}`,{method:'POST'});renderServiceStatus(state);toast(action==='pause'?'服务已暂停':'服务已恢复')}catch(error){toast(error.message);await loadServiceStatus()}};
+$('#terminate-service').onclick=async()=>{if(!confirm('确定终止后台服务吗？聊天、手机同步和定时任务会停止；需要使用桌面启动器才能再次启动。'))return;const button=$('#terminate-service');button.disabled=true;try{renderServiceStatus({state:'terminating',version:$('#app-version').textContent.replace(/^v/,''),can_control:true});await api('/api/service/terminate',{method:'POST'});toast('正在终止服务…');setTimeout(loadServiceStatus,700)}catch(error){toast(error.message);await loadServiceStatus()}};
+
 $$('.nav').forEach(button=>button.onclick=()=>{const id=button.dataset.view;$$('.nav,.view').forEach(el=>el.classList.remove('active'));button.classList.add('active');$('#'+id).classList.add('active');$('#page-title').textContent=id==='today'?greeting():titles[id];$('.sidebar').classList.remove('open');if(id==='memory')loadFiles();if(id==='inbox'){loadUploadHistory();loadInboxHistory()}if(id==='health')loadHealth();if(id==='settings'){loadUsage();loadProviders();loadEmailAccounts();loadPairedDevices();loadLocationSettings();loadWebSearchSettings();loadNotificationSettings()}if(id==='chat'){loadProviders();syncConversation(true)}});
 $('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
 
@@ -121,6 +127,7 @@ function renderMarkdown(value){const lines=String(value||'').replace(/\r\n?/g,'\
 function escapeHtml(value){return String(value).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 updateClock();setInterval(updateClock,30000);
 applyTheme(localStorage.getItem('second_brain_theme')||'system');
+loadServiceStatus();setInterval(loadServiceStatus,10000);
 loadProviders().catch(()=>{});
 loadProfileStatus().catch(()=>{});
 loadLatestMorning().catch(()=>{});

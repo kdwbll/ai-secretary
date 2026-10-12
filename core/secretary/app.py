@@ -29,6 +29,7 @@ from .service import SecretaryService
 from .storage import LocalStorage
 from .secrets import SecretStore
 from .web_search import WebSearchService
+from .runtime import ServiceRuntime
 
 # ROOT is deliberately user-writable state (database, memory, uploads).  In a
 # frozen desktop build the code and static assets live in PyInstaller's
@@ -38,7 +39,8 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.7.9"
+APP_VERSION = "0.8.0"
+RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
@@ -260,10 +262,15 @@ async def lifespan(app: FastAPI):
         scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
         morning_hour, morning_minute = map(int, (DB.setting("morning_time", "07:30") or "07:30").split(":"))
         review_hour, review_minute = map(int, (DB.setting("review_time", "22:30") or "22:30").split(":"))
-        scheduler.add_job(REPORTS.morning, "cron", hour=morning_hour, minute=morning_minute, id="morning")
-        scheduler.add_job(REPORTS.evening, "cron", hour=review_hour, minute=review_minute, id="evening")
-        scheduler.add_job(REPORTS.weekly, "cron", day_of_week="sun", hour=23, minute=0, id="weekly")
-        scheduler.add_job(sync_email_accounts, "interval", minutes=30, id="email-sync", max_instances=1)
+        def scheduled(task):
+            def run():
+                if not RUNTIME.paused and not RUNTIME.terminating:
+                    task()
+            return run
+        scheduler.add_job(scheduled(REPORTS.morning), "cron", hour=morning_hour, minute=morning_minute, id="morning")
+        scheduler.add_job(scheduled(REPORTS.evening), "cron", hour=review_hour, minute=review_minute, id="evening")
+        scheduler.add_job(scheduled(REPORTS.weekly), "cron", day_of_week="sun", hour=23, minute=0, id="weekly")
+        scheduler.add_job(scheduled(sync_email_accounts), "interval", minutes=30, id="email-sync", max_instances=1)
         scheduler.start()
     except ImportError:
         pass
@@ -297,12 +304,46 @@ async def protect_personal_api(request: Request, call_next):
             status_code=401,
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if RUNTIME.paused and request.method not in {"GET", "HEAD", "OPTIONS"} and not path.startswith("/api/service/"):
+        return JSONResponse({"detail": "核心服务已暂停；请在电脑网页端恢复服务", "code": "service_paused"}, status_code=423)
     return await call_next(request)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": APP_VERSION}
+    return {"ok": True, "version": APP_VERSION, "state": RUNTIME.status(APP_VERSION, False)["state"]}
+
+
+def local_service_control(request: Request) -> None:
+    if not ACCESS.is_loopback(request.client.host if request.client else None):
+        raise HTTPException(403, "服务控制仅允许在电脑本机网页端操作")
+
+
+@app.get("/api/service/status")
+def service_status(request: Request):
+    local = ACCESS.is_loopback(request.client.host if request.client else None)
+    return RUNTIME.status(APP_VERSION, local)
+
+
+@app.post("/api/service/pause")
+def service_pause(request: Request):
+    local_service_control(request)
+    RUNTIME.pause()
+    return RUNTIME.status(APP_VERSION, True)
+
+
+@app.post("/api/service/resume")
+def service_resume(request: Request):
+    local_service_control(request)
+    RUNTIME.resume()
+    return RUNTIME.status(APP_VERSION, True)
+
+
+@app.post("/api/service/terminate")
+def service_terminate(request: Request):
+    local_service_control(request)
+    RUNTIME.request_termination()
+    return RUNTIME.status(APP_VERSION, True)
 
 
 @app.get("/api/auth/status")
