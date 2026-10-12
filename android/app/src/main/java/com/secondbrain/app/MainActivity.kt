@@ -83,6 +83,18 @@ private fun notificationListenerStatus(context: Context): String {
     return "通知监听已授权 · 最近捕获：${at("notification_last_captured_at")} · 最近上传：${at("notification_last_uploaded_at")}"
 }
 
+private fun smsStatus(context: Context): String {
+    if (context.checkSelfPermission(Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) {
+        return "短信读取未授权。请在系统权限中允许“短信”。"
+    }
+    val preferences = context.getSharedPreferences("second_brain", Context.MODE_PRIVATE)
+    fun at(key: String): String {
+        val millis = preferences.getLong(key, 0)
+        return if (millis == 0L) "暂无" else java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM).format(java.util.Date(millis))
+    }
+    return "短信权限已授权 · 最近捕获：${at("sms_last_captured_at")} · 最近上传：${at("sms_last_uploaded_at")}"
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun SecondBrainApp(intent: Intent?) {
@@ -105,6 +117,7 @@ fun SecondBrainApp(intent: Intent?) {
     var deleteTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var openedNotification by remember { mutableStateOf<RemoteNotification?>(null) }
     var notificationStatus by remember { mutableStateOf(notificationListenerStatus(context)) }
+    var currentSmsStatus by remember { mutableStateOf(smsStatus(context)) }
     val scope = rememberCoroutineScope()
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.values.any { it }) scope.launch {
@@ -118,6 +131,7 @@ fun SecondBrainApp(intent: Intent?) {
     }
     suspend fun refresh() {
         notificationStatus = notificationListenerStatus(context)
+        currentSmsStatus = smsStatus(context)
         connected = ApiClient.health(server, token)
         if (connected == true) {
             notice = "已安全联通电脑 · 数据自动同步"
@@ -299,7 +313,7 @@ fun SecondBrainApp(intent: Intent?) {
                     }, onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
-                    else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, onSave = {
+                    else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
                         scope.launch {
@@ -385,11 +399,17 @@ private fun MarkdownText(markdown: String) {
 
 @Composable
 private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var mapError by remember(spec, config) { mutableStateOf<String?>(null) }
+    val fallbackUrl = remember(spec) { amapFallbackUrl(spec) }
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F1E8)), modifier = Modifier.fillMaxWidth()) {
         Column {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("高德地图", style = MaterialTheme.typography.titleSmall, color = Forest)
+                TextButton(onClick = { runCatching { contextStartUrl(context, fallbackUrl) } }) { Text("在高德打开") }
+            }
             if (config?.apiKey.isNullOrBlank()) {
-                Text("地图已命中，请先在电脑设置页填写高德地图 Key。", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                Text("已生成地图卡片，但未读取到电脑端高德 Key。可先用右上角打开高德。", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
             } else {
                 val html = remember(spec, config) { amapHtml(spec, config!!) }
                 AndroidView(
@@ -411,6 +431,12 @@ private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
                                         return true
                                     }
                                     return false
+                                }
+                                override fun onReceivedError(view: WebView, request: android.webkit.WebResourceRequest, error: android.webkit.WebResourceError) {
+                                    if (request.isForMainFrame) mapError = "地图页面加载失败：${error.description}"
+                                }
+                                override fun onReceivedHttpError(view: WebView, request: android.webkit.WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
+                                    if (request.isForMainFrame) mapError = "地图页面加载失败（HTTP ${errorResponse.statusCode}）"
                                 }
                             }
                             webChromeClient = object : WebChromeClient() {
@@ -441,6 +467,16 @@ private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
             Text(spec.query.ifBlank { spec.label.ifBlank { "位置地图" } }, Modifier.padding(horizontal = 11.dp, vertical = 8.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
     }
+}
+
+private fun amapFallbackUrl(spec: MapSpec): String {
+    val query = spec.query.ifBlank { spec.label.ifBlank { "当前位置" } }
+    val center = if (spec.longitude != null && spec.latitude != null) "&center=${spec.longitude},${spec.latitude}" else ""
+    return "https://uri.amap.com/search?keyword=${URLEncoder.encode(query, StandardCharsets.UTF_8.toString())}$center&callnative=1"
+}
+
+private fun contextStartUrl(context: Context, url: String) {
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
 }
 
 private class AmapStatusBridge(private val onError: (String) -> Unit) {
@@ -586,7 +622,7 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -607,6 +643,7 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         Text("仅在点击时申请日历读取权限，并只读取昨天至未来 14 天的日程；不会创建、修改或删除手机日历。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         Text(notificationStatus, style = MaterialTheme.typography.bodySmall, color = if (notificationStatus.startsWith("系统尚未")) Color(0xFF9A433A) else Forest)
+        Text(smsStatus, style = MaterialTheme.typography.bodySmall, color = if (smsStatus.startsWith("短信读取未授权")) Color(0xFF9A433A) else Forest)
         Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
         }

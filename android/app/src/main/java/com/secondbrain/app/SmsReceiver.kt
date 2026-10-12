@@ -11,6 +11,7 @@ class SmsReceiver : BroadcastReceiver() {
         val server = preferences.getString("server", null) ?: return
         val token = preferences.getString("access_token", null) ?: return
         Telephony.Sms.Intents.getMessagesFromIntent(intent).forEach { sms ->
+            preferences.edit().putLong("sms_last_captured_at", System.currentTimeMillis()).apply()
             SyncWorker.enqueueSms(context, server, token, sms.originatingAddress ?: "", sms.messageBody)
         }
     }
