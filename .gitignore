@@ -23,3 +23,8 @@ android/**/build/
 .android-build/
 artifacts/*.apk
 artifacts/*.csv
+build/
+dist/
+dist-release/
+dist-installer/
+*.egg-info/
