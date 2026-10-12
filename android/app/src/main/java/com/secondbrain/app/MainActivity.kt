@@ -70,6 +70,8 @@ class MainActivity : ComponentActivity() {
 
 private val Forest = Color(0xFF315D49)
 private val Paper = Color(0xFFF5F1E8)
+private val Ink = Color(0xFF1F2924)
+private val WarmAccent = Color(0xFFD78042)
 
 private fun notificationListenerStatus(context: Context): String {
     val preferences = context.getSharedPreferences("second_brain", Context.MODE_PRIVATE)
@@ -262,12 +264,31 @@ fun SecondBrainApp(intent: Intent?) {
         )
     }
 
-    MaterialTheme(colorScheme = lightColorScheme(primary = Forest, background = Paper, surface = Color(0xFFFFFDF8))) {
+    val workspaceColors = lightColorScheme(
+        primary = Forest,
+        onPrimary = Color.White,
+        secondary = WarmAccent,
+        background = Paper,
+        surface = Color(0xFFFFFDF8),
+        surfaceVariant = Color(0xFFE8EEE8),
+        outline = Color(0xFFD2D8D1),
+        onBackground = Ink,
+    )
+    MaterialTheme(colorScheme = workspaceColors) {
         Scaffold(
+            containerColor = Paper,
             topBar = {
-                TopAppBar(title = { Text("第二大脑") }, actions = {
-                    Surface(color = if (connected == true) Color(0xFFDDEBE2) else Color(0xFFF3DEDA), shape = RoundedCornerShape(99.dp)) {
-                        Text(if (connected == true) "● 已联通" else "● 未联通", Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.labelSmall)
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Paper, titleContentColor = Ink),
+                    title = {
+                        Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("第二大脑", style = MaterialTheme.typography.titleLarge)
+                            Text("PERSONAL WORKSPACE · v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    },
+                    actions = {
+                    Surface(color = if (connected == true) Color(0xFFDDEBE2) else Color(0xFFF3DEDA), shape = RoundedCornerShape(99.dp), tonalElevation = 1.dp) {
+                        Text(if (connected == true) "● 已联通" else "● 未联通", Modifier.padding(horizontal = 11.dp, vertical = 7.dp), color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.labelSmall)
                     }
                     Spacer(Modifier.width(12.dp))
                 })
@@ -632,12 +653,15 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onScanNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("连接电脑", style = MaterialTheme.typography.headlineSmall)
+        Text("SECOND BRAIN DESKTOP · v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall, color = Forest)
         OutlinedTextField(server, onServer, label = { Text("核心服务地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(pairingCode, onPairingCode, label = { Text(if (hasToken) "新配对码（重新配对时填写）" else "电脑端 6 位配对码") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text(if (pairingCode.isBlank()) "保存并测试连接" else "保存并配对") }
         Text(if (connected == true) "已使用设备令牌安全访问电脑服务。" else "先在电脑 Web 设置页生成配对码，再在这里填写。请确保两台设备连接同一 Wi-Fi。", color = if (connected == true) Forest else Color(0xFF9A433A), style = MaterialTheme.typography.bodySmall)
+            }
             }
         }
         item { TokenActivityCard(usage) }
