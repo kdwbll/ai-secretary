@@ -15,6 +15,7 @@ from .health import HealthService
 from .memory import MemoryEngine
 from .models import ModelRouter
 from .parsers import ParsedEvent, parse_notification, parse_sms
+from .notification_filter import is_noise_notification
 from .web_search import SearchOutcome
 
 
@@ -769,6 +770,8 @@ class SecretaryService:
         return event.to_dict()
 
     def ingest_notification(self, package: str, title: str, text: str) -> dict:
+        if is_noise_notification(package, title, text):
+            return {"ignored": True, "reason": "system_service_notification"}
         event = parse_notification(package, title, text)
         self._apply_event(event, "通知")
         self.database.add_event("notification", event.kind, event.to_dict())
