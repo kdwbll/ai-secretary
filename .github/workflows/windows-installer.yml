@@ -21,15 +21,19 @@ jobs:
       - name: Install packager dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . pyinstaller
+          python -m pip install '.[documents]' 'pyinstaller>=6,<7'
           choco install innosetup --no-progress -y
       - name: Build bundled desktop app
         run: >
           pyinstaller --noconfirm --clean --windowed --name SecondBrain
           --add-data "web;web"
           --add-data "core/prompts;core/prompts"
+          --add-data "LICENSE;."
           --collect-all uvicorn
+          --collect-all imageio_ffmpeg
           windows/second_brain_launcher.py
+      - name: Verify bundled desktop app
+        run: python scripts/smoke_desktop.py dist/SecondBrain/SecondBrain.exe
       - name: Build setup executable
         run: iscc windows/installer/SecondBrain.iss
       - name: Publish installer artifact
@@ -45,4 +49,4 @@ jobs:
         shell: pwsh
         run: |
           $installer = Get-ChildItem dist-installer\SecondBrain-Setup-*.exe | Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME $installer.FullName --title "SecondBrain $env:GITHUB_REF_NAME" --generate-notes
+          gh release create $env:GITHUB_REF_NAME $installer.FullName --title "SecondBrain $env:GITHUB_REF_NAME" --notes-file docs/release-0.8.1.md

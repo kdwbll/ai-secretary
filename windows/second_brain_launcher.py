@@ -26,7 +26,7 @@ def data_root() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         raise RuntimeError("Windows LOCALAPPDATA directory is unavailable.")
-    root = Path(local_app_data) / "SecondBrain"
+    root = Path(os.environ.get("SECOND_BRAIN_ROOT", str(Path(local_app_data) / "SecondBrain")))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -43,9 +43,14 @@ def show_error(message: str) -> None:
     ctypes.windll.user32.MessageBoxW(None, message, "SecondBrain", 0x10)
 
 
+def open_page() -> None:
+    if os.environ.get("SECOND_BRAIN_NO_OPEN") != "1":
+        webbrowser.open(LOCAL_URL)
+
+
 def main() -> None:
     if can_connect():
-        webbrowser.open(LOCAL_URL)
+        open_page()
         return
 
     root = data_root()
@@ -78,7 +83,7 @@ def main() -> None:
         thread.start()
         for _ in range(100):
             if can_connect():
-                webbrowser.open(LOCAL_URL)
+                open_page()
                 thread.join()
                 return
             if not thread.is_alive():
@@ -87,7 +92,8 @@ def main() -> None:
         raise RuntimeError("The local service did not start within 10 seconds. See second-brain.log.")
     except Exception as exc:  # Keep a double-click launch diagnosable.
         logging.exception("SecondBrain failed to start")
-        show_error(f"SecondBrain could not start.\n\n{exc}\n\nLog: {root / 'second-brain.log'}")
+        if os.environ.get("SECOND_BRAIN_NO_OPEN") != "1":
+            show_error(f"SecondBrain could not start.\n\n{exc}\n\nLog: {root / 'second-brain.log'}")
         raise SystemExit(1) from exc
 
 
