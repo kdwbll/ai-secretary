@@ -39,19 +39,6 @@ macOS 也可以直接双击项目中的 `start-second-brain.command`。启动器
 
 随后在电脑 Web 的“设置 → 设备安全”生成一次性 6 位配对码。在手机中填写电脑的局域网 IP（例如 `http://192.168.1.20:8765`）和配对码。配对成功后，手机会使用独立设备令牌访问；可随时在电脑端撤销。数据库只保存令牌的 SHA-256 哈希，不保存可直接使用的原令牌。仍不建议把 8765 端口直接映射到公网。
 
-Windows 11 推荐使用本分支提供的一键脚本：第一次双击 `install-second-brain-windows.cmd`，以后双击桌面 `SecondBrain` 快捷方式或 `start-second-brain-windows.cmd`。启动器不包含任何固定的个人电脑路径，项目移动到其他磁盘后仍能从自身目录启动。详细说明见 [docs/windows-11.md](docs/windows-11.md)。
-
-不想安装 Git 或 Python 的 Windows 用户，可从 GitHub 的 **Actions → Build Windows installer** 运行或下载 `SecondBrain-Windows-Installer`。下载其中的 `SecondBrain-Setup-*.exe` 后双击安装；程序与依赖安装在应用目录，个人数据保存在 `%LOCALAPPDATA%\SecondBrain`，升级和卸载不会删除个人数据。
-
-也可以手动使用 PowerShell：
-
-```powershell
-py -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m core.secretary.cli init
-.venv\Scripts\python -m uvicorn core.secretary.app:app --host 127.0.0.1 --port 8765
-```
-
 ## CLI
 
 ```bash
