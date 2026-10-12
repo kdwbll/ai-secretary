@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -41,6 +42,7 @@ class SecretaryService:
         self.notifications = notifications
         self.secret_store = secret_store
         self.web_search = web_search
+        self._memory_write_lock = threading.RLock()
 
     def initialize(self) -> None:
         self.memory.initialize()
@@ -644,14 +646,38 @@ class SecretaryService:
             raise
 
     def _persist_chat_memory(self, message: str, answer: str, chat_id: int, attachments: dict[str, Any]) -> None:
+        progress = attachments.setdefault("memory_progress", [])
         try:
-            self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
-            self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
-            self.memory.rebuild_index()
+            with self._memory_write_lock:
+                if "daily" not in progress:
+                    self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
+                    progress.append("daily")
+                if "fact" not in progress:
+                    self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
+                    progress.append("fact")
+                if "index" not in progress:
+                    self.memory.rebuild_index()
+                    progress.append("index")
+                attachments["memory_status"] = "saved"
         except Exception:
+            attachments["memory_status"] = "failed"
             attachments.setdefault("warnings", []).append(
-                "回答已生成，但本地记忆写入失败；本轮内容没有被长期记住。请检查 memory 目录权限后重试。"
+                "回答已生成，但本地记忆写入失败；部分内容可能尚未保存。请点击重试保存记忆。"
             )
+
+    def retry_chat_memory(self, chat_id: int) -> dict[str, Any]:
+        with self._memory_write_lock:
+            rows = self.database.rows("SELECT * FROM chat_messages WHERE id=?", (chat_id,))
+            if not rows:
+                raise KeyError("聊天记录不存在")
+            row = rows[0]
+            attachments = json.loads(row["attachments"] or "{}")
+            if attachments.get("memory_status") != "failed":
+                raise ValueError("这条会话没有需要重试的记忆保存任务")
+            attachments["warnings"] = [value for value in attachments.get("warnings", []) if "记忆写入失败" not in value]
+            self._persist_chat_memory(row["user_message"], row["assistant_message"], chat_id, attachments)
+            self._finish_chat(chat_id, row["assistant_message"], json.loads(row["sources"] or "[]"), attachments)
+            return {"id": chat_id, "saved": attachments.get("memory_status") == "saved", "attachments": attachments}
 
     def _finish_chat(self, chat_id: int, answer: str, sources: list[str], attachments: Optional[dict[str, Any]] = None) -> None:
         with self.database.connect() as db:

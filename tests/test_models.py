@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from core.secretary.database import Database
@@ -93,16 +94,54 @@ class RouterTests(unittest.TestCase):
             router.save_provider("one", "http://one/v1", "a", ["default"])
             router.set_route(Route("smart", "one", "default"))
             with patch.object(router, "_openai_call", side_effect=[ModelNetworkError("offline"), "ok"]) as call, \
-                    patch("core.secretary.models.time.sleep") as sleep:
+                    patch("core.secretary.models.time.sleep") as sleep, patch("core.secretary.models.random.uniform", return_value=0):
                 self.assertEqual(router.complete("smart", []), "ok")
             self.assertEqual(call.call_count, 2)
             sleep.assert_called_once_with(0.5)
 
-    def test_rate_limit_respects_bounded_retry_after(self):
+    def test_long_rate_limit_is_not_retried_earlier_than_requested(self):
         error = ModelRateLimitError("limited", retry_after=60)
         with patch("core.secretary.models.time.sleep") as sleep:
-            ModelRouter._sleep_before_retry(error, 0)
-        sleep.assert_called_once_with(10.0)
+            self.assertFalse(ModelRouter._sleep_before_retry(error, 0))
+        sleep.assert_not_called()
+
+    def test_reset_connection_is_logged_as_failed_without_charging_tokens(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("reset", "https://example.com/v1", "key", ["model"])
+            with patch("urllib.request.urlopen", side_effect=ConnectionResetError("reset")):
+                with self.assertRaises(ModelNetworkError):
+                    router._openai_call("smart", "reset", "model", [], 0.2)
+            row = database.rows("SELECT * FROM ai_calls")[0]
+            self.assertEqual(row["status"], "error")
+            self.assertEqual(row["prompt_tokens"] + row["completion_tokens"], 0)
+
+    def test_http_parameter_error_is_not_retryable(self):
+        error = urllib.error.HTTPError("https://example.com", 400, "bad request", {}, None)
+        self.assertFalse(ModelRouter._classify_error(error).retryable)
+
+    def test_stream_without_finish_signal_is_logged_as_error(self):
+        with TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "db.sqlite")
+            router = ModelRouter(database)
+            router.save_provider("stream", "https://example.com/v1", "key", ["model"])
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.__iter__.return_value = iter([b'data: {"choices":[{"delta":{"content":"partial"}}]}\n'])
+            with patch("urllib.request.urlopen", return_value=response):
+                with self.assertRaises(ModelNetworkError):
+                    list(router._openai_stream("smart", "stream", "model", [{"role": "user", "content": "question"}], 0.2))
+            row = database.rows("SELECT * FROM ai_calls")[0]
+            self.assertEqual(row["status"], "error")
+            self.assertGreater(row["completion_tokens"], 0)
+
+    def test_short_retry_after_and_jitter_are_observed(self):
+        with patch("core.secretary.models.time.sleep") as sleep:
+            self.assertTrue(ModelRouter._sleep_before_retry(ModelRateLimitError("limited", 3), 0))
+            sleep.assert_called_once_with(3)
+        with patch("core.secretary.models.time.sleep") as sleep, patch("core.secretary.models.random.uniform", return_value=0.2):
+            ModelRouter._sleep_before_retry(ModelNetworkError("offline"), 1)
+            sleep.assert_called_once_with(1.2)
 
     def test_invalid_response_is_not_retried(self):
         with TemporaryDirectory() as temp:

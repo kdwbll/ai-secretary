@@ -46,6 +46,14 @@ class EmailConnectorTests(TestCase):
     def test_html_converter_decodes_entities_and_line_breaks(self):
         self.assertEqual(html_to_text("<p>A&amp;B</p><p>第二行</p>"), "A&B\n\n第二行")
 
+    def test_html_email_does_not_preserve_executable_content_or_tracking_urls(self):
+        text = html_to_text('<script>alert(1)</script><img src="https://tracker.example/pixel"><a href="javascript:alert(2)">查看通知</a><p>周五交材料</p>')
+        self.assertIn("查看通知", text)
+        self.assertIn("周五交材料", text)
+        self.assertNotIn("alert", text)
+        self.assertNotIn("tracker", text)
+        self.assertNotIn("javascript", text)
+
 
 class EmailIngestionTests(TestCase):
     def test_body_and_attachments_are_searchable_after_ingestion(self):

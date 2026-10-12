@@ -190,6 +190,22 @@ class ChatHistoryTests(TestCase):
             history = service.chat_history()
             self.assertEqual(history[0]["attachments"]["warnings"], result["attachments"]["warnings"])
 
+    def test_memory_retry_resumes_after_index_failure_without_duplicate_daily_entry(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            original = service.memory.rebuild_index
+            service.memory.rebuild_index = Mock(side_effect=PermissionError("read only"))
+            result = service.chat("帮我制定今天的计划")
+            self.assertEqual(result["attachments"]["memory_status"], "failed")
+            service.memory.rebuild_index = original
+            self.assertTrue(service.retry_chat_memory(result["id"])["saved"])
+            daily = service.memory.storage.read_text(f"daily/{date.today().isoformat()}.md")
+            self.assertEqual(daily.count(f"对话 #{result['id']})"), 1)
+            self.assertEqual(service.models.complete.call_count, 1)
+            self.assertEqual(service.chat_history()[0]["attachments"]["warnings"], [])
+            with self.assertRaises(ValueError):
+                service.retry_chat_memory(result["id"])
+
     def test_non_stream_failure_is_persisted_instead_of_staying_unfinished(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))

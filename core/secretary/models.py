@@ -9,8 +9,10 @@ import urllib.error
 import urllib.request
 import socket
 import time
+import random
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterator, Optional
 
 from .database import Database
@@ -190,7 +192,7 @@ class ModelRouter:
                 attempts.append((route.fallback_provider, route.fallback_model))
         last_exception: Exception = ModelError("模型调用失败")
         for provider_name, model in attempts:
-            for retry_index in range(2):
+            for retry_index in range(3):
                 try:
                     return self._openai_call(task, provider_name, model, messages, temperature)
                 except ModelNotConfiguredError:
@@ -198,9 +200,11 @@ class ModelRouter:
                 except Exception as exc:
                     classified = self._classify_error(exc)
                     last_exception = classified
-                    if retry_index == 0 and classified.retryable:
-                        self._sleep_before_retry(classified, retry_index)
-                        continue
+                    if not classified.retryable:
+                        raise classified from exc
+                    if retry_index < 2:
+                        if self._sleep_before_retry(classified, retry_index):
+                            continue
                     break
         raise last_exception
 
@@ -220,7 +224,7 @@ class ModelRouter:
 
         last_error: Exception = ModelError("模型调用失败")
         for provider_name, selected_model in attempts:
-            for retry_index in range(2):
+            for retry_index in range(3):
                 emitted = False
                 try:
                     for chunk in self._openai_stream(task, provider_name, selected_model, messages, temperature):
@@ -229,24 +233,29 @@ class ModelRouter:
                     return
                 except Exception as exc:
                     classified = self._classify_error(exc)
-                    if emitted:
+                    if emitted or not classified.retryable:
                         raise classified from exc
                     last_error = classified
-                    if retry_index == 0 and classified.retryable:
-                        self._sleep_before_retry(classified, retry_index)
-                        continue
+                    if retry_index < 2:
+                        if self._sleep_before_retry(classified, retry_index):
+                            continue
                     break
         raise last_error
 
     @staticmethod
-    def _sleep_before_retry(error: ModelError, retry_index: int) -> None:
+    def _sleep_before_retry(error: ModelError, retry_index: int) -> bool:
         retry_after = getattr(error, "retry_after", None)
         if retry_after is not None:
-            delay = max(0.5, min(float(retry_after), 10.0))
+            # A long server cooldown must not be shortened. Let the caller
+            # return the failure or use its fallback instead of blocking.
+            if float(retry_after) > 10.0:
+                return False
+            delay = max(0.5, float(retry_after))
         else:
             base = 1.0 if isinstance(error, ModelRateLimitError) else 0.5
-            delay = min(base * (2 ** retry_index), 8.0)
+            delay = min(base * (2 ** retry_index), 8.0) + random.uniform(0, base * 0.5)
         time.sleep(delay)
+        return True
 
     def analyze_images(self, task: str, paths: list, prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
         content = [{"type": "text", "text": prompt}]
@@ -317,7 +326,7 @@ class ModelRouter:
                 level_label = {"low": "小", "medium": "中", "high": "大"}.get(level, "中")
                 answer += f"\n\n（回答达到“{level_label}消耗”上限；如需更详细内容，可提高该供应商的消耗程度后继续提问。）"
             return answer
-        except (urllib.error.URLError, KeyError, ValueError, socket.timeout) as exc:
+        except Exception as exc:
             status, error = "error", str(exc)
             if isinstance(exc, ValueError):
                 raise
@@ -336,7 +345,7 @@ class ModelRouter:
             raise ModelNotConfiguredError(f"供应商不存在：{provider_name}")
         provider = rows[0]
         max_tokens = {"low": 2048, "medium": 4096, "high": 8192}.get(provider["consumption_level"], 4096)
-        prompt_tokens = self._estimate_tokens(messages)
+        prompt_tokens = 0
         completion_tokens = 0
         status, error = "ok", None
         try:
@@ -351,12 +360,15 @@ class ModelRouter:
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.secrets.decrypt(provider['api_key'])}"},
             )
             with urllib.request.urlopen(request, timeout=90) as response:
+                prompt_tokens = self._estimate_tokens(messages)
+                received_content, finished = False, False
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        finished = True
                         break
                     event = json.loads(data)
                     usage = event.get("usage") or {}
@@ -366,12 +378,17 @@ class ModelRouter:
                     choices = event.get("choices") or []
                     if not choices:
                         continue
+                    if choices[0].get("finish_reason"):
+                        finished = True
                     delta = choices[0].get("delta", {}).get("content", "")
                     if isinstance(delta, list):
                         delta = "".join(str(item.get("text", "")) for item in delta if isinstance(item, dict))
                     if delta:
+                        received_content = True
                         completion_tokens += self._estimate_tokens(delta) if not usage else 0
                         yield str(delta)
+                if not received_content or not finished:
+                    raise ModelNetworkError("模型流在完整回答前断开")
         except Exception as exc:
             status, error = "error", str(exc)
             raise self._classify_error(exc) from exc
@@ -388,19 +405,30 @@ class ModelRouter:
         if isinstance(exc, ModelError):
             return exc
         if isinstance(exc, urllib.error.HTTPError):
-            if exc.code == 429:
+            if exc.code == 429 or 500 <= exc.code <= 599:
                 retry_after = None
                 try:
-                    retry_after = float(exc.headers.get("Retry-After")) if exc.headers.get("Retry-After") else None
+                    raw = exc.headers.get("Retry-After") if exc.headers else None
+                    if raw:
+                        try:
+                            retry_after = float(raw)
+                        except ValueError:
+                            retry_after = max(0, (parsedate_to_datetime(raw) - datetime.now(timezone.utc)).total_seconds())
                 except (TypeError, ValueError):
                     pass
-                return ModelRateLimitError(str(exc), retry_after)
+                error = ModelRateLimitError(str(exc), retry_after) if exc.code == 429 else ModelError(str(exc))
+                error.retry_after = retry_after
+                return error
             if exc.code in {401, 403}:
                 error = ModelError("模型密钥无效或没有权限")
                 error.user_message = "模型密钥无效或没有权限，请到设置页检查 API Key"
                 error.retryable = False
                 return error
-        if isinstance(exc, (urllib.error.URLError, socket.timeout, TimeoutError)):
+            if 400 <= exc.code <= 499 and exc.code != 408:
+                error = ModelResponseError(str(exc))
+                error.user_message = "模型请求参数不被支持，请检查接口地址与模型设置"
+                return error
+        if isinstance(exc, (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError)):
             return ModelNetworkError(str(exc))
         if isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)):
             return ModelResponseError(str(exc))
