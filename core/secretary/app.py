@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import sys
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
@@ -29,7 +30,14 @@ from .storage import LocalStorage
 from .secrets import SecretStore
 from .web_search import WebSearchService
 
-ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", Path(__file__).resolve().parents[2])).resolve()
+# ROOT is deliberately user-writable state (database, memory, uploads).  In a
+# frozen desktop build the code and static assets live in PyInstaller's
+# temporary bundle, so keep those resources separate from user data.
+RESOURCE_ROOT = Path(os.environ.get(
+    "SECOND_BRAIN_RESOURCES_ROOT",
+    getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
+)).resolve()
+ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
 APP_VERSION = "0.7.7"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -39,7 +47,7 @@ MEMORY = MemoryEngine(LocalStorage(ROOT / "memory"), DB)
 MODELS = ModelRouter(DB, SECRETS)
 NOTIFICATIONS = NotificationService(DB)
 WEB_SEARCH = WebSearchService(DB, SECRETS)
-SERVICE = SecretaryService(MEMORY, DB, MODELS, ROOT / "core" / "prompts", NOTIFICATIONS.publish, SECRETS, WEB_SEARCH)
+SERVICE = SecretaryService(MEMORY, DB, MODELS, RESOURCE_ROOT / "core" / "prompts", NOTIFICATIONS.publish, SECRETS, WEB_SEARCH)
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
@@ -776,7 +784,7 @@ def reports():
     return {"reports": DB.rows("SELECT id,created_at,kind,content FROM reports ORDER BY id DESC LIMIT 30")}
 
 
-WEB = ROOT / "web"
+WEB = RESOURCE_ROOT / "web"
 app.mount("/assets", StaticFiles(directory=str(WEB)), name="assets")
 
 
