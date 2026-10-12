@@ -61,7 +61,19 @@ def main() -> None:
         import uvicorn
         from core.secretary.app import app
 
-        server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT, log_level="info"))
+        # The packaged launcher is a windowed executable, so Windows does not
+        # provide stdout/stderr.  Uvicorn's default logging configuration uses
+        # those streams while creating its formatter and crashes before the
+        # server starts.  Application errors continue to go to LOG_PATH via
+        # the file logging configured above.
+        config = uvicorn.Config(
+            app,
+            host=HOST,
+            port=PORT,
+            log_config=None,
+            access_log=False,
+        )
+        server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, name="SecondBrainServer", daemon=False)
         thread.start()
         for _ in range(100):
