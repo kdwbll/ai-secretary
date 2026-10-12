@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#F5F1E8"/>
-  <rect x="78" y="78" width="868" height="868" rx="174" fill="#214636"/>
-  <circle cx="512" cy="512" r="305" fill="#315D49" stroke="#D7CAB3" stroke-width="16"/>
-  <text x="512" y="646" text-anchor="middle" font-family="Songti SC, STSong, serif" font-size="410" fill="#FFFDF8">乙</text>
-  <circle cx="762" cy="267" r="48" fill="#D78042"/>
-</svg>
