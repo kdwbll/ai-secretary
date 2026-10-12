@@ -34,6 +34,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start_second_brain_windows.ps
 - 浏览器打不开：查看 `data\server-windows-error.log`。
 - 显示端口被占用：关闭已有服务，或先设置 `$env:SECOND_BRAIN_PORT=8766` 再运行启动脚本。
 - 手机连接不上：确认手机与电脑在同一个可信 Wi-Fi，Windows 网络配置为“专用”，并允许 Python 通过专用网络防火墙。
-- 脚本闪退：从 Windows Terminal 运行对应 `.cmd`，可保留完整错误信息。
+- 脚本闪退：最新版入口会停留在窗口中。若仍立即关闭，请从 Windows Terminal 运行对应 `.cmd`，并提供窗口内容或 `data\server-windows-error.log`。
 
 API Key、邮箱授权码和地图 Key 仍由应用加密后保存在本机；不要把 `data`、`memory`、`files` 目录上传到 Git。
