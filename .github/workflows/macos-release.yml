@@ -1,0 +1,40 @@
+name: Build macOS release
+
+on:
+  push:
+    tags: ["mac-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packager dependencies
+        run: python -m pip install '.[documents]' 'pyinstaller>=6,<7'
+      - name: Build application and disk image
+        run: bash scripts/build_macos.sh
+      - name: Verify bundled application
+        run: python scripts/smoke_desktop.py dist/SecondBrain.app/Contents/MacOS/SecondBrain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SecondBrain-macOS-${{ matrix.runner }}
+          path: dist-release/*.dmg
+          if-no-files-found: error
+      - name: Attach disk image to existing version release
+        if: startsWith(github.ref, 'refs/tags/mac-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="${GITHUB_REF_NAME#mac-}"
+          gh release upload "$release_tag" dist-release/*.dmg

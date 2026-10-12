@@ -1,0 +1,17 @@
+SecondBrain 0.8.1 for macOS
+
+1. Open the DMG and drag SecondBrain.app into Applications.
+2. Open SecondBrain from Applications. Your browser opens automatically.
+3. Configure your AI provider in Settings. Pair the Android app from Settings.
+
+This app includes its Python runtime. Git and Python are not required.
+The local service continues running when you close the browser.
+Use Settings > Terminate service before replacing the app with a newer version.
+
+User data: ~/Library/Application Support/SecondBrain
+Startup log: ~/Library/Application Support/SecondBrain/second-brain.log
+The app does not include or copy personal data from a source-code installation.
+
+This community build is not notarized by Apple. If macOS blocks it, use
+System Settings > Privacy & Security > Open Anyway after checking the download
+origin. Apple Silicon Macs use arm64; Intel Macs use x86_64.
