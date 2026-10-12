@@ -15,7 +15,7 @@ try {
     $BrowserUrl = "http://127.0.0.1:$Port"
 
     if (-not (Test-Path $Python)) {
-        Write-Host "尚未安装项目运行环境。请先双击 install-second-brain-windows.cmd。" -ForegroundColor Yellow
+        Write-Host "Runtime is not installed. Run install-second-brain-windows.cmd first." -ForegroundColor Yellow
         exit 2
     }
 
@@ -31,7 +31,7 @@ try {
     }
 
     if (-not (Test-SecondBrain)) {
-        Write-Host "正在启动第二大脑…"
+        Write-Host "Starting SecondBrain..."
         $arguments = @(
             "-m", "uvicorn", "core.secretary.app:app",
             "--app-dir", ('"' + $ProjectDir + '"'),
@@ -50,19 +50,19 @@ try {
             }
         }
         if (-not $ready) {
-            Write-Host "服务未能在 12 秒内启动。错误日志：$StderrLog" -ForegroundColor Red
+            Write-Host "Service did not start within 12 seconds. Error log: $StderrLog" -ForegroundColor Red
             if (Test-Path $StderrLog) { Get-Content $StderrLog -Tail 20 }
             exit 1
         }
     }
 
-    Write-Host "第二大脑已运行：$BrowserUrl" -ForegroundColor Green
+    Write-Host "SecondBrain is running: $BrowserUrl" -ForegroundColor Green
     if (-not $LocalOnly) {
-        Write-Host "已允许可信局域网内的已配对手机连接；首次运行时请允许 Windows 防火墙的专用网络访问。"
+        Write-Host "Paired phones on a trusted LAN can connect. Allow Python through Windows Firewall on private networks when prompted."
     }
     Start-Process $BrowserUrl
     exit 0
 } catch {
-    Write-Host "启动失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Startup failed: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }

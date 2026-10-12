@@ -11,13 +11,13 @@ function Invoke-Checked {
 
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "命令执行失败（退出码 $LASTEXITCODE）：$Program $($Arguments -join ' ')"
+        throw "Command failed with exit code $LASTEXITCODE: $Program $($Arguments -join ' ')"
     }
 }
 
 try {
     Set-Location $ProjectDir
-    Write-Host "正在为 Windows 11 配置第二大脑…" -ForegroundColor Cyan
+    Write-Host "Configuring SecondBrain for Windows 11..." -ForegroundColor Cyan
 
     if (-not (Test-Path $VenvPython)) {
         $PyLauncher = Get-Command "py.exe" -ErrorAction SilentlyContinue
@@ -27,12 +27,12 @@ try {
         } elseif ($Python) {
             Invoke-Checked -Program $Python.Source -Arguments @("-m", "venv", ".venv")
         } else {
-            throw "未找到 Python。请先从 python.org 安装 Python 3.11 或更高版本，并勾选 Add Python to PATH。"
+            throw "Python was not found. Install Python 3.11+ from python.org and select Add Python to PATH."
         }
     }
 
     if (-not (Test-Path $VenvPython)) {
-        throw "Python 虚拟环境创建失败：$VenvPython"
+        throw "Python virtual environment was not created: $VenvPython"
     }
 
     Invoke-Checked -Program $VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip")
@@ -41,19 +41,19 @@ try {
 
     $Desktop = [Environment]::GetFolderPath("Desktop")
     if ([string]::IsNullOrWhiteSpace($Desktop)) {
-        throw "无法确定 Windows 桌面目录，未创建快捷方式。"
+        throw "Windows Desktop folder was not found; shortcut was not created."
     }
 $ShortcutPath = Join-Path $Desktop "SecondBrain.lnk"
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = $Shell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = Join-Path $ProjectDir "start-second-brain-windows.cmd"
     $Shortcut.WorkingDirectory = $ProjectDir
-    $Shortcut.Description = "启动本地第二大脑 AI 助理"
+    $Shortcut.Description = "Start the local SecondBrain AI assistant"
     $Shortcut.Save()
 
-    Write-Host "运行环境、数据目录和桌面快捷方式已准备完成。" -ForegroundColor Green
+    Write-Host "Runtime, data directory, and desktop shortcut are ready." -ForegroundColor Green
     exit 0
 } catch {
-    Write-Host "安装失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Installation failed: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
