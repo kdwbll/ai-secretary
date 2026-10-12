@@ -16,20 +16,7 @@
 - Android Compose 伴侣：联通状态、双端实时会话、系统分享、短信/通知记录、图片/视频/文件上传与删除、WorkManager 离线队列
 - QQ/163 等通用 IMAP 只读连接器（使用邮箱授权码）
 
-## 快速开始
-
-macOS / Linux：
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m core.secretary.cli init
-./run.sh
-```
-
-然后打开 [http://localhost:8765](http://localhost:8765)。默认只允许本机访问，避免未认证的个人记忆暴露到局域网。
-
-macOS 也可以直接双击项目中的 `start-second-brain.command`。启动器会复用已经运行的服务；未运行时会在后台启动，然后自动打开浏览器。手机需要连接时，启动器默认监听可信局域网地址。
+## 快速开始（Windows）
 
 需要连接 Android 手机时，应先确认当前网络可信，再显式运行：
 
@@ -51,6 +38,8 @@ py -m venv .venv
 .venv\Scripts\python -m core.secretary.cli init
 .venv\Scripts\python -m uvicorn core.secretary.app:app --host 127.0.0.1 --port 8765
 ```
+
+然后打开 [http://localhost:8765](http://localhost:8765)。默认只允许本机访问，避免未认证的个人记忆暴露到局域网。
 
 ## CLI
 
