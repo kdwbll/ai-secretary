@@ -41,6 +41,8 @@ macOS 也可以直接双击项目中的 `start-second-brain.command`。启动器
 
 Windows 11 推荐使用本分支提供的一键脚本：第一次双击 `install-second-brain-windows.cmd`，以后双击桌面 `SecondBrain` 快捷方式或 `start-second-brain-windows.cmd`。启动器不包含任何固定的个人电脑路径，项目移动到其他磁盘后仍能从自身目录启动。详细说明见 [docs/windows-11.md](docs/windows-11.md)。
 
+不想安装 Git 或 Python 的 Windows 用户，可从 GitHub 的 **Actions → Build Windows installer** 运行或下载 `SecondBrain-Windows-Installer`。下载其中的 `SecondBrain-Setup-*.exe` 后双击安装；程序与依赖安装在应用目录，个人数据保存在 `%LOCALAPPDATA%\SecondBrain`，升级和卸载不会删除个人数据。
+
 也可以手动使用 PowerShell：
 
 ```powershell
