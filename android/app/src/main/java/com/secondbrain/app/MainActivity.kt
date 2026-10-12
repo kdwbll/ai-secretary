@@ -332,7 +332,10 @@ fun SecondBrainApp(intent: Intent?) {
                             }
                             refresh()
                         }
-                    }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, onLocation = {
+                    }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, onScanNotifications = {
+                        SecondBrainNotificationListener.requestActiveSync(context)
+                        notice = "正在扫描当前通知栏并立即同步…"
+                    }, onLocation = {
                         locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     }, onCalendar = {
                         if (context.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED) syncCalendar()
@@ -622,7 +625,7 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onScanNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -642,6 +645,7 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         OutlinedButton(onClick = onCalendar, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("读取并同步近期日程") }
         Text("仅在点击时申请日历读取权限，并只读取昨天至未来 14 天的日程；不会创建、修改或删除手机日历。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
+        OutlinedButton(onClick = onScanNotifications, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("重新扫描当前通知栏") }
         Text(notificationStatus, style = MaterialTheme.typography.bodySmall, color = if (notificationStatus.startsWith("系统尚未")) Color(0xFF9A433A) else Forest)
         Text(smsStatus, style = MaterialTheme.typography.bodySmall, color = if (smsStatus.startsWith("短信读取未授权")) Color(0xFF9A433A) else Forest)
         Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
