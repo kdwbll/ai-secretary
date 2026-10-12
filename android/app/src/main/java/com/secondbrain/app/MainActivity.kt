@@ -332,6 +332,11 @@ fun SecondBrainApp(intent: Intent?) {
                     0 -> ConversationScreen(server, chats, mapConfig, draft, { draft = it }, sending, uploading,
                         onSend = { sendMessage(draft) },
                         onQuickReply = { choice -> sendMessage("针对你刚才的问题，我选择：$choice") },
+                        onRetryMemory = { chatId -> scope.launch {
+                            runCatching { ApiClient.retryMemory(server, token, chatId) }
+                                .onSuccess { saved -> notice = if (saved) "记忆已保存" else "记忆仍未保存，请检查电脑文件权限"; chats = ApiClient.chats(server, token) }
+                                .onFailure { notice = "保存失败：${it.message}" }
+                        } },
                         onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
@@ -374,7 +379,7 @@ fun SecondBrainApp(intent: Intent?) {
 }
 
 @Composable
-private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onQuickReply: (String) -> Unit, onPickFiles: () -> Unit) {
+private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onQuickReply: (String) -> Unit, onRetryMemory: (Long) -> Unit, onPickFiles: () -> Unit) {
     val listState = rememberLazyListState()
     LaunchedEffect(chats.size, chats.lastOrNull()?.assistant) {
         if (chats.isNotEmpty()) listState.scrollToItem(chats.lastIndex)
@@ -387,6 +392,10 @@ private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapCon
                 val assistantText = if (chat.guidance == null && guidance != null) collapseLegacyFollowups(chat.assistant) else chat.assistant
                 MessageBubble(server, chat.user, true, emptyList(), mapConfig, null, false, onQuickReply)
                 MessageBubble(server, assistantText.ifBlank { "正在处理…" }, false, chat.maps, mapConfig, guidance, chat.id == chats.lastOrNull()?.id, onQuickReply)
+                if (chat.memoryFailed) {
+                    Text("回答已完成，部分记忆尚未保存。", color = WarmAccent, style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { onRetryMemory(chat.id) }) { Text("重试保存记忆") }
+                }
             }
         }
         Surface(Modifier.fillMaxWidth().padding(top = 5.dp), shape = RoundedCornerShape(25.dp), color = Color(0xFFFFFDF8), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD2D8D1))) {

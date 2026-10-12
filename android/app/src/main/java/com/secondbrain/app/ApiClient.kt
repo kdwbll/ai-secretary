@@ -31,6 +31,7 @@ data class ChatExchange(
     val assistant: String,
     val maps: List<MapSpec>,
     val guidance: GuidedQuestion?,
+    val memoryFailed: Boolean = false,
 )
 data class CollectedEvent(val id: Long, val createdAt: String, val source: String, val kind: String, val title: String, val content: String)
 data class UploadReceipt(val name: String, val summary: String)
@@ -96,7 +97,7 @@ object ApiClient {
                         }.orEmpty().filter { it.isNotBlank() }
                         GuidedQuestion(guide.optString("question"), options).takeIf { it.question.isNotBlank() && it.options.isNotEmpty() }
                     }
-                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps, guidance))
+                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps, guidance, item.optJSONObject("attachments")?.optString("memory_status") == "failed"))
                 }
             }
         }
@@ -107,6 +108,13 @@ object ApiClient {
             if (!response.isSuccessful) error("读取地图配置失败（${response.code}）")
             val result = JSONObject(response.body?.string().orEmpty())
             MapConfig(result.optString("api_key"), result.optString("security_code"))
+        }
+    }
+
+    suspend fun retryMemory(server: String, token: String, chatId: Long): Boolean = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/chats/$chatId/retry-memory", token).post("{}".toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            if (!response.isSuccessful) error("记忆重试失败（${response.code}）")
+            JSONObject(response.body?.string().orEmpty()).optBoolean("saved")
         }
     }
 
