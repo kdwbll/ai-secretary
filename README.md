@@ -29,7 +29,7 @@ python3 -m venv .venv
 
 然后打开 [http://localhost:8765](http://localhost:8765)。默认只允许本机访问，避免未认证的个人记忆暴露到局域网。
 
-macOS 也可以直接双击项目中的 `启动第二大脑.command`。启动器会复用已经运行的服务；未运行时会在后台启动，然后自动打开浏览器。手机需要连接时，启动器默认监听可信局域网地址。
+macOS 也可以直接双击项目中的 `start-second-brain.command`。启动器会复用已经运行的服务；未运行时会在后台启动，然后自动打开浏览器。手机需要连接时，启动器默认监听可信局域网地址。
 
 需要连接 Android 手机时，应先确认当前网络可信，再显式运行：
 
@@ -39,7 +39,9 @@ macOS 也可以直接双击项目中的 `启动第二大脑.command`。启动器
 
 随后在电脑 Web 的“设置 → 设备安全”生成一次性 6 位配对码。在手机中填写电脑的局域网 IP（例如 `http://192.168.1.20:8765`）和配对码。配对成功后，手机会使用独立设备令牌访问；可随时在电脑端撤销。数据库只保存令牌的 SHA-256 哈希，不保存可直接使用的原令牌。仍不建议把 8765 端口直接映射到公网。
 
-Windows PowerShell：
+Windows 11 推荐使用本分支提供的一键脚本：第一次双击 `install-second-brain-windows.cmd`，以后双击桌面 `SecondBrain` 快捷方式或 `start-second-brain-windows.cmd`。启动器不包含任何固定的个人电脑路径，项目移动到其他磁盘后仍能从自身目录启动。详细说明见 [docs/windows-11.md](docs/windows-11.md)。
+
+也可以手动使用 PowerShell：
 
 ```powershell
 py -m venv .venv
