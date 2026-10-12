@@ -390,6 +390,11 @@ def chats(limit: int = 100, q: str = ""):
     return {"chats": SERVICE.chat_history(limit, q)}
 
 
+@app.get("/api/chats/state")
+def chat_state():
+    return SERVICE.chat_state()
+
+
 @app.delete("/api/chats/{chat_id}")
 def chat_delete(chat_id: int, body: ChatDeleteInput):
     try:
