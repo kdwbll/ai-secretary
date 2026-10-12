@@ -28,6 +28,12 @@ DOMAIN_HINTS = {
     "me.md": ("我是", "目标", "价值观", "不要", "偏好"),
 }
 
+# A deliberately small wire format for a single guided follow-up.  It is
+# removed before the answer is displayed and becomes a local attachment, so a
+# model can keep writing natural Markdown while both clients get reliable
+# button labels.
+GUIDANCE_MARKER = re.compile(r"\s*\[\[guide:\s*([^|\]\n]+?)\s*\|\s*([^\]\n]+?)\s*\]\]", re.IGNORECASE)
+
 
 class SecretaryService:
     def __init__(self, memory: MemoryEngine, database: Database, models: ModelRouter, prompt_dir: Path, notifications=None, secret_store=None, web_search=None):
@@ -38,6 +44,24 @@ class SecretaryService:
 
     def initialize(self) -> None:
         self.memory.initialize()
+
+    @staticmethod
+    def _extract_guidance(answer: str) -> tuple[str, Optional[dict[str, Any]]]:
+        """Pull one model-authored follow-up out of an answer.
+
+        Keeping only the first question is intentional: completing a decision
+        before asking the next one makes the conversation useful on a phone
+        instead of presenting a form full of unrelated choices.
+        """
+        match = GUIDANCE_MARKER.search(answer)
+        if not match:
+            return answer, None
+        question = match.group(1).strip()
+        options = [item.strip() for item in match.group(2).split("|") if item.strip()]
+        cleaned = (answer[:match.start()] + answer[match.end():]).strip()
+        if not question or not options:
+            return cleaned, None
+        return cleaned, {"question": question, "options": options[:6]}
 
     def choose_context(self, message: str, limit: int = 5) -> list[str]:
         scored = []
@@ -558,9 +582,12 @@ class SecretaryService:
             raise
         if not isinstance(answer, str) or not answer.strip():
             answer = self._local_answer(message, context, paths)
+        answer, guidance = self._extract_guidance(answer)
         answer, links = self._enrich_answer(message, answer)
         attachments["links"] = list({item["url"]: item for item in [*attachments["links"], *links]}.values())
         attachments["assistant_files"] = self._related_images(message, file_hashes)
+        if guidance:
+            attachments["guidance"] = guidance
         self._persist_chat_memory(message, answer, chat_id, attachments)
         self._finish_chat(chat_id, answer, paths, attachments)
         return {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}
@@ -597,9 +624,12 @@ class SecretaryService:
             answer = "".join(answer_parts).strip()
             if not answer:
                 raise RuntimeError("模型返回了空内容")
+            answer, guidance = self._extract_guidance(answer)
             answer, links = self._enrich_answer(message, answer)
             attachments["links"] = list({item["url"]: item for item in [*attachments["links"], *links]}.values())
             attachments["assistant_files"] = self._related_images(message, file_hashes)
+            if guidance:
+                attachments["guidance"] = guidance
             self._persist_chat_memory(message, answer, chat_id, attachments)
             self._finish_chat(chat_id, answer, paths, attachments)
             yield {"event": "done", "data": {"id": chat_id, "answer": answer, "sources": paths, "attachments": attachments}}
