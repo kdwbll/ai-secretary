@@ -41,8 +41,11 @@ def main() -> None:
             assert health["ok"] and health["version"] == "0.8.1", health
             with opener.open(url, timeout=5) as response:
                 assert "第二大脑" in response.read().decode("utf-8")
+            with opener.open(url + "/api/auth/local-token", timeout=5) as response:
+                token = json.load(response)["token"]
             for path in ("/assets/app.js", "/api/providers"):
-                with opener.open(url + path, timeout=5) as response:
+                request = urllib.request.Request(url + path, headers={"Authorization": "Bearer " + token})
+                with opener.open(request, timeout=5) as response:
                     assert response.status == 200 and response.read(), path
             assert (root / "data/second-brain.db").is_file()
             print("Frozen app: startup, version, Web assets, authentication and Unicode data path OK")
