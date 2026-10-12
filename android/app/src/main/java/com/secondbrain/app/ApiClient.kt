@@ -119,6 +119,22 @@ object ApiClient {
         }
     }
 
+    suspend fun syncCalendar(server: String, token: String, windowStart: String, windowEnd: String, events: List<CalendarEvent>) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("window_start", windowStart).put("window_end", windowEnd)
+        val records = org.json.JSONArray()
+        events.forEach { event ->
+            records.put(JSONObject()
+                .put("external_id", event.externalId).put("title", event.title)
+                .put("start_at", event.startAt).put("end_at", event.endAt).put("all_day", event.allDay)
+                .put("location", event.location).put("description", event.description).put("calendar_name", event.calendarName))
+        }
+        body.put("events", records)
+        client.newCall(request(server, "/api/ingest/calendar", token)
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            if (!response.isSuccessful) error("日程同步失败（${response.code}）")
+        }
+    }
+
     suspend fun notifications(server: String, token: String, afterId: Long): List<RemoteNotification> = withContext(Dispatchers.IO) {
         client.newCall(request(server, "/api/notifications?after_id=$afterId", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取提醒失败（${response.code}）")

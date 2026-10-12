@@ -101,6 +101,23 @@ class NotificationInput(BaseModel):
     text: str
 
 
+class CalendarEventInput(BaseModel):
+    external_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(default="（无标题日程）", max_length=500)
+    start_at: str = Field(min_length=1, max_length=64)
+    end_at: str = Field(min_length=1, max_length=64)
+    all_day: bool = False
+    location: str = Field(default="", max_length=1000)
+    description: str = Field(default="", max_length=4000)
+    calendar_name: str = Field(default="", max_length=200)
+
+
+class CalendarSyncInput(BaseModel):
+    window_start: str = Field(min_length=1, max_length=64)
+    window_end: str = Field(min_length=1, max_length=64)
+    events: list[CalendarEventInput] = Field(default_factory=list, max_length=200)
+
+
 class EmailAccountInput(BaseModel):
     name: str
     host: str
@@ -654,6 +671,16 @@ def ingest_sms(body: SmsInput):
 @app.post("/api/ingest/notification")
 def ingest_notification(body: NotificationInput):
     return SERVICE.ingest_notification(body.package, body.title, body.text)
+
+
+@app.post("/api/ingest/calendar")
+def ingest_calendar(body: CalendarSyncInput):
+    try:
+        return SERVICE.ingest_calendar_events(
+            [item.model_dump() for item in body.events], body.window_start, body.window_end
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/events")

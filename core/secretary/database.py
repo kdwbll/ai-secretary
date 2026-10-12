@@ -143,6 +143,13 @@ def _switch_default_search_to_bocha(db: sqlite3.Connection) -> None:
     db.execute("UPDATE settings SET value='bocha' WHERE key='web_search_provider' AND value='brave'")
 
 
+def _add_calendar_event_index(db: sqlite3.Connection) -> None:
+    # Calendar instances are identified by the Android provider event id plus
+    # their occurrence start.  Keep the key inside the existing event payload
+    # so the timeline, reports, and device API retain one event model.
+    db.execute("CREATE INDEX IF NOT EXISTS idx_events_source_status ON events(source, status, id DESC)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -151,6 +158,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "add local location sources", _add_locations),
     Migration(6, "add local notification outbox", _add_notifications),
     Migration(7, "switch default web search to bocha", _switch_default_search_to_bocha),
+    Migration(8, "index collected calendar events", _add_calendar_event_index),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

@@ -5,11 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.Html
 import android.text.method.LinkMovementMethod
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.JavascriptInterface
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,6 +44,8 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 class MainActivity : ComponentActivity() {
     private val requestPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
@@ -93,14 +102,15 @@ fun SecondBrainApp(intent: Intent?) {
                 .onFailure { notice = "位置上报失败：${it.message}" }
         } else notice = "未授予位置权限，没有读取位置"
     }
-
     suspend fun refresh() {
         connected = ApiClient.health(server, token)
         if (connected == true) {
             notice = "已安全联通电脑 · 数据自动同步"
             runCatching { ApiClient.chats(server, token) }.onSuccess { updated ->
                 chats = updated
-                if (mapConfig == null && updated.any { it.maps.isNotEmpty() }) {
+                // Do not cache an empty key forever: it is common to save the
+                // AMap key on the computer after the phone first connects.
+                if (updated.any { it.maps.isNotEmpty() }) {
                     runCatching { ApiClient.mapConfig(server, token) }.onSuccess { mapConfig = it }
                 }
             }
@@ -114,6 +124,32 @@ fun SecondBrainApp(intent: Intent?) {
                 incoming.maxOfOrNull { it.id }?.let { preferences.edit().putLong("last_notification_id", it).apply() }
             }
         } else notice = if (token.isBlank()) "尚未配对 · 请在电脑设置页生成配对码" else "未连接或授权已撤销 · 请检查地址后重新配对"
+    }
+
+    fun syncCalendar() {
+        scope.launch {
+            if (token.isBlank() || connected != true) {
+                notice = "请先连接电脑后再同步日程"
+                return@launch
+            }
+            notice = "正在只读获取并同步近期日程…"
+            val now = Instant.now()
+            val from = now.minus(1, ChronoUnit.DAYS)
+            val until = now.plus(14, ChronoUnit.DAYS)
+            runCatching {
+                val calendarEvents = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    CalendarReader.recent(context, from.toEpochMilli(), until.toEpochMilli())
+                }
+                ApiClient.syncCalendar(server, token, from.toString(), until.toString(), calendarEvents)
+                calendarEvents.size
+            }.onSuccess { count ->
+                notice = "已只读同步 $count 条近期日程到电脑"
+                refresh()
+            }.onFailure { notice = "日程同步失败：${it.message}" }
+        }
+    }
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) syncCalendar() else notice = "未授予日历读取权限，未读取任何日程"
     }
 
     LaunchedEffect(server, token) {
@@ -256,6 +292,9 @@ fun SecondBrainApp(intent: Intent?) {
                         }
                     }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, onLocation = {
                         locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    }, onCalendar = {
+                        if (context.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED) syncCalendar()
+                        else calendarPermission.launch(Manifest.permission.READ_CALENDAR)
                     })
                 }
             }
@@ -318,6 +357,7 @@ private fun MarkdownText(markdown: String) {
 
 @Composable
 private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
+    var mapError by remember(spec, config) { mutableStateOf<String?>(null) }
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F1E8)), modifier = Modifier.fillMaxWidth()) {
         Column {
             if (config?.apiKey.isNullOrBlank()) {
@@ -330,7 +370,30 @@ private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
                         WebView(context).apply {
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
-                            webViewClient = WebViewClient()
+                            // Some AMap assets are still served over HTTP on
+                            // certain networks.  The card contains no local
+                            // credentials and has a visible HTTPS fallback.
+                            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                            settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                            addJavascriptInterface(AmapStatusBridge { message -> mapError = message }, "SecondBrainMap")
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                                    if (url.startsWith("https://uri.amap.com/")) {
+                                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                                        return true
+                                    }
+                                    return false
+                                }
+                            }
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                                    val text = message.message()
+                                    if (text.contains("USERKEY", ignoreCase = true) || text.contains("AMap", ignoreCase = true) && text.contains("error", ignoreCase = true)) {
+                                        mapError = "高德地图初始化失败：$text"
+                                    }
+                                    return super.onConsoleMessage(message)
+                                }
+                            }
                             tag = html.hashCode()
                             // Keep the same origin as the paired server. AMap Web keys
                             // commonly whitelist that LAN origin; using webapi.amap.com
@@ -346,8 +409,18 @@ private fun AmapCard(server: String, spec: MapSpec, config: MapConfig?) {
                     },
                 )
             }
+            mapError?.let { Text(it, Modifier.padding(horizontal = 11.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A433A)) }
             Text(spec.query.ifBlank { spec.label.ifBlank { "位置地图" } }, Modifier.padding(horizontal = 11.dp, vertical = 8.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
+    }
+}
+
+private class AmapStatusBridge(private val onError: (String) -> Unit) {
+    private val mainThread = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun reportError(message: String) {
+        mainThread.post { onError(message) }
     }
 }
 
@@ -432,7 +505,7 @@ private fun amapHtml(spec: MapSpec, config: MapConfig): String {
         window._AMapSecurityConfig={securityJsCode:${JSONObject.quote(config.securityCode)}};
         const state=document.getElementById('state'),center=$center,query=${JSONObject.quote(spec.query)};
         const fallback='https://uri.amap.com/search?keyword='+encodeURIComponent(query||${JSONObject.quote(spec.label.ifBlank { "当前位置" })})+(center?'&center='+center.join(','):'')+'&callnative=1';
-        function fail(message){state.innerHTML=message+'<a href="'+fallback+'">在高德地图中打开 ↗</a>';state.style.display='grid'}
+        function fail(message){if(window.SecondBrainMap)SecondBrainMap.reportError(message);state.innerHTML=message+'<a href="'+fallback+'">在高德地图中打开 ↗</a>';state.style.display='grid'}
         function ready(){try{const map=new AMap.Map('map',{zoom:13,center:center||undefined});if(center)new AMap.Marker({position:center,map:map,title:${JSONObject.quote(spec.label.ifBlank { "当前位置" })}});if(query)AMap.plugin('AMap.PlaceSearch',()=>{const search=new AMap.PlaceSearch({map:map,pageSize:5});${if (spec.mode == "nearby") "if(center)search.searchNearBy(query,center,5000);else search.search(query);" else "search.search(query);"}});state.style.display='none'}catch(error){fail('地图初始化失败，请检查 Key 的域名白名单')}}</script>
         <script src="https://webapi.amap.com/maps?v=2.0&key=$encodedKey" onload="ready()" onerror="fail('地图资源加载失败，请检查手机网络')"></script>
         <script>setTimeout(()=>{if(state.style.display!=='none')fail('地图加载超时，请检查网络与高德 Key')},8000)</script></body></html>
@@ -442,12 +515,12 @@ private fun amapHtml(spec: MapSpec, config: MapConfig): String {
 @Composable
 private fun EventsScreen(events: List<CollectedEvent>, onRefresh: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        SectionHeader("已采集内容", "短信与通知按时间同步到电脑", "刷新", onRefresh)
+        SectionHeader("已采集内容", "短信、通知与只读日程按时间同步到电脑", "刷新", onRefresh)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            if (events.isEmpty()) item { Text("暂无记录。只有授权后新收到的短信和通知会显示在这里。", color = Color.Gray) }
+            if (events.isEmpty()) item { Text("暂无记录。授权后可同步短信、通知和近期日程。", color = Color.Gray) }
             items(events, key = { it.id }) { event ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("${if (event.source == "sms") "短信" else "通知"} · ${event.title}", style = MaterialTheme.typography.titleSmall)
+                    Text("${when (event.source) { "sms" -> "短信"; "calendar" -> "日程"; else -> "通知" }} · ${event.title}", style = MaterialTheme.typography.titleSmall)
                     Text(event.content, style = MaterialTheme.typography.bodyMedium)
                     Text(event.createdAt, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 } }
@@ -485,7 +558,7 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, onSave: () -> Unit, onNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -502,6 +575,8 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         HorizontalDivider()
         OutlinedButton(onClick = onLocation, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("上报一次当前位置") }
         Text("不会后台持续定位；只有点击这个按钮时才读取并上报 GPS。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        OutlinedButton(onClick = onCalendar, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("读取并同步近期日程") }
+        Text("仅在点击时申请日历读取权限，并只读取昨天至未来 14 天的日程；不会创建、修改或删除手机日历。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         Text("短信权限在首次启动时申请；通知读取需要在系统页面单独开启。HyperOS 还应允许后台自启动，并将省电策略设为无限制。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
