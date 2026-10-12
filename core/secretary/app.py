@@ -40,7 +40,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -494,6 +494,16 @@ def chats(limit: int = 100, q: str = ""):
 @app.get("/api/chats/state")
 def chat_state():
     return SERVICE.chat_state()
+
+
+@app.post("/api/chats/{chat_id}/retry-memory")
+def retry_chat_memory(chat_id: int):
+    try:
+        return SERVICE.retry_chat_memory(chat_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.delete("/api/chats/{chat_id}")
