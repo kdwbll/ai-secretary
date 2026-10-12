@@ -9,49 +9,75 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
-    override fun doWork(): Result {
-        val server = inputData.getString("server") ?: return Result.failure()
-        val token = inputData.getString("token") ?: return Result.failure()
-        val kind = inputData.getString("kind") ?: "chat"
-        val message = escape(inputData.getString("message") ?: return Result.success())
-        val endpoint: String
-        val json: String
-        when (kind) {
-            "sms" -> { endpoint = "/api/ingest/sms"; json = "{\"text\":\"$message\",\"sender\":\"${escape(inputData.getString("sender") ?: "")}\"}" }
-            "notification" -> { endpoint = "/api/ingest/notification"; json = "{\"package\":\"${escape(inputData.getString("package") ?: "")}\",\"title\":\"${escape(inputData.getString("title") ?: "")}\",\"text\":\"$message\"}" }
-            else -> { endpoint = "/api/chat"; json = "{\"message\":\"$message\"}" }
-        }
-        val body = json.toRequestBody("application/json".toMediaType())
-        return try {
-            OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
-                .newCall(Request.Builder().url("$server$endpoint").header("Authorization", "Bearer $token").post(body).build()).execute().use { response ->
-                val result = if (response.isSuccessful) Result.success() else if (response.code == 401) Result.failure() else Result.retry()
-                if (response.isSuccessful && (kind == "notification" || kind == "sms")) {
-                    val preferenceKey = if (kind == "notification") "notification_last_uploaded_at" else "sms_last_uploaded_at"
-                    applicationContext.getSharedPreferences("second_brain", Context.MODE_PRIVATE).edit()
-                        .putLong(preferenceKey, System.currentTimeMillis()).apply()
-                }
-                result
-            }
-        } catch (_: Exception) {
-            Result.retry()
-        }
+    override fun doWork(): Result = when (send(applicationContext, inputData)) {
+        UploadResult.SUCCESS -> Result.success()
+        UploadResult.UNAUTHORIZED -> Result.failure()
+        UploadResult.RETRY -> Result.retry()
     }
 
     companion object {
+        private enum class UploadResult { SUCCESS, UNAUTHORIZED, RETRY }
+
+        private val client = OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+
         private fun escape(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
 
-        private fun enqueue(context: Context, data: Data, expedite: Boolean = false) {
-            // WorkManager is intentionally used so content survives temporary disconnection.
-            val builder = OneTimeWorkRequestBuilder<SyncWorker>().setInputData(data)
+        private fun send(context: Context, data: Data): UploadResult {
+            val server = data.getString("server") ?: return UploadResult.UNAUTHORIZED
+            val token = data.getString("token") ?: return UploadResult.UNAUTHORIZED
+            val kind = data.getString("kind") ?: "chat"
+            val message = escape(data.getString("message") ?: return UploadResult.SUCCESS)
+            val endpoint: String
+            val json: String
+            when (kind) {
+                "sms" -> { endpoint = "/api/ingest/sms"; json = "{\"text\":\"$message\",\"sender\":\"${escape(data.getString("sender") ?: "")}\"}" }
+                "notification" -> { endpoint = "/api/ingest/notification"; json = "{\"package\":\"${escape(data.getString("package") ?: "")}\",\"title\":\"${escape(data.getString("title") ?: "")}\",\"text\":\"$message\"}" }
+                else -> { endpoint = "/api/chat"; json = "{\"message\":\"$message\"}" }
+            }
+            val body = json.toRequestBody("application/json".toMediaType())
+            return try {
+                client.newCall(Request.Builder().url("$server$endpoint").header("Authorization", "Bearer $token").post(body).build()).execute().use { response ->
+                    when {
+                        response.isSuccessful -> {
+                            if (kind == "notification" || kind == "sms") {
+                                val preferenceKey = if (kind == "notification") "notification_last_uploaded_at" else "sms_last_uploaded_at"
+                                context.getSharedPreferences("second_brain", Context.MODE_PRIVATE).edit()
+                                    .putLong(preferenceKey, System.currentTimeMillis()).apply()
+                            }
+                            UploadResult.SUCCESS
+                        }
+                        response.code == 401 -> UploadResult.UNAUTHORIZED
+                        else -> UploadResult.RETRY
+                    }
+                }
+            } catch (_: Exception) {
+                UploadResult.RETRY
+            }
+        }
+
+        private fun enqueue(context: Context, data: Data) {
+            val request = OneTimeWorkRequestBuilder<SyncWorker>().setInputData(data)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            if (expedite) builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            val request = builder.build()
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .build()
             WorkManager.getInstance(context).enqueue(request)
         }
 
+        /** Send while the listener/receiver is alive; queue only when it fails. */
+        private fun sendOrEnqueue(context: Context, data: Data) {
+            if (send(context, data) == UploadResult.RETRY) enqueue(context, data)
+        }
+
+        private fun submitNow(context: Context, data: Data) {
+            Thread { sendOrEnqueue(context.applicationContext, data) }.start()
+        }
+
         fun enqueueChat(context: Context, server: String, token: String, message: String) = enqueue(context, workDataOf("kind" to "chat", "server" to server, "token" to token, "message" to message))
-        fun enqueueSms(context: Context, server: String, token: String, sender: String, message: String) = enqueue(context, workDataOf("kind" to "sms", "server" to server, "token" to token, "sender" to sender, "message" to message), expedite = true)
-        fun enqueueNotification(context: Context, server: String, token: String, packageName: String, title: String, text: String) = enqueue(context, workDataOf("kind" to "notification", "server" to server, "token" to token, "package" to packageName, "title" to title, "message" to text), expedite = true)
+        fun sendSmsNow(context: Context, server: String, token: String, sender: String, message: String) = sendOrEnqueue(context, workDataOf("kind" to "sms", "server" to server, "token" to token, "sender" to sender, "message" to message))
+        fun enqueueSms(context: Context, server: String, token: String, sender: String, message: String) = submitNow(context, workDataOf("kind" to "sms", "server" to server, "token" to token, "sender" to sender, "message" to message))
+        fun enqueueNotification(context: Context, server: String, token: String, packageName: String, title: String, text: String) = submitNow(context, workDataOf("kind" to "notification", "server" to server, "token" to token, "package" to packageName, "title" to title, "message" to text))
     }
 }
