@@ -335,6 +335,10 @@ fun SecondBrainApp(intent: Intent?) {
                     }, onNotifications = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, onScanNotifications = {
                         SecondBrainNotificationListener.requestActiveSync(context)
                         notice = "正在扫描当前通知栏并立即同步…"
+                        scope.launch {
+                            delay(1500)
+                            refresh()
+                        }
                     }, onLocation = {
                         locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     }, onCalendar = {
