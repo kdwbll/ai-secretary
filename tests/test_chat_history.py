@@ -56,6 +56,16 @@ class ChatHistoryTests(TestCase):
             service.chat("再补充一项")
             self.assertNotEqual(service.chat_state()["signature"], signature)
 
+    def test_system_service_notification_is_not_saved(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            result = service.ingest_notification(
+                "com.android.mms", "“短信”正在运行", "点按即可了解详情或停止应用。"
+            )
+            self.assertTrue(result["ignored"])
+            events = service.database.rows("SELECT id FROM events WHERE source='notification'")
+            self.assertEqual(events, [])
+
     def test_existing_facts_mark_profile_as_completed(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))

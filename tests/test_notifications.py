@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+import sqlite3
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
@@ -29,3 +31,19 @@ class NotificationTests(TestCase):
             service.publish("weekly", "每周整理", "内容" * 20_000)
 
             self.assertEqual(len(service.since()[0]["body"]), 20_000)
+
+    def test_database_upgrade_removes_old_system_service_notifications(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "data.db"
+            Database(path)
+            with sqlite3.connect(path) as db:
+                db.execute(
+                    "INSERT INTO events(created_at,source,kind,payload) VALUES(?,?,?,?)",
+                    ("2026-10-12T20:36:22", "notification", "notification", json.dumps({
+                        "title": "应用通知", "raw": "“短信”正在运行 点按即可了解详情或停止应用。",
+                    }, ensure_ascii=False)),
+                )
+                db.execute("DELETE FROM schema_migrations WHERE version=9")
+                db.execute("PRAGMA user_version=8")
+            Database(path)
+            self.assertEqual(Database(path).rows("SELECT id FROM events WHERE source='notification'"), [])

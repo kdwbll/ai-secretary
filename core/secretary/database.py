@@ -150,6 +150,22 @@ def _add_calendar_event_index(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_events_source_status ON events(source, status, id DESC)")
 
 
+def _purge_noise_notifications(db: sqlite3.Connection) -> None:
+    """Remove old Android foreground/service notifications already collected."""
+    from .notification_filter import is_noise_notification
+
+    stale_ids: list[tuple[int]] = []
+    for row in db.execute("SELECT id,payload FROM events WHERE source='notification'"):
+        try:
+            payload = json.loads(row[1] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if is_noise_notification("", str(payload.get("title") or ""), str(payload.get("raw") or "")):
+            stale_ids.append((int(row[0]),))
+    if stale_ids:
+        db.executemany("DELETE FROM events WHERE id=?", stale_ids)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -159,6 +175,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(6, "add local notification outbox", _add_notifications),
     Migration(7, "switch default web search to bocha", _switch_default_search_to_bocha),
     Migration(8, "index collected calendar events", _add_calendar_event_index),
+    Migration(9, "remove noisy Android service notifications", _purge_noise_notifications),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

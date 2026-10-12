@@ -9,6 +9,15 @@ class SecondBrainNotificationListener : NotificationListenerService() {
         fun requestActiveSync(context: android.content.Context) {
             requestRebind(android.content.ComponentName(context, SecondBrainNotificationListener::class.java))
         }
+
+        private val noisyPackages = setOf(
+            "android", "com.android.mms", "com.android.systemui", "com.android.settings", "com.google.android.gms",
+        )
+        private val noisyPackagePrefixes = listOf("com.miui.", "com.xiaomi.")
+        private val noisyText = listOf(
+            "正在运行", "正在运行中", "正在处理中", "正在处理", "点按即可了解详情或停止应用",
+            "语音唤醒", "小爱正在运行", "查找正在处理", "服务正在运行",
+        )
     }
 
     override fun onListenerConnected() {
@@ -38,6 +47,7 @@ class SecondBrainNotificationListener : NotificationListenerService() {
             extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
         ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
         if (title.isBlank() && text.isBlank()) return
+        if (isNoiseNotification(sbn, title, text)) return
         val preferences = getSharedPreferences("second_brain", MODE_PRIVATE)
         val server = preferences.getString("server", null) ?: return
         val token = preferences.getString("access_token", null) ?: return
@@ -48,4 +58,15 @@ class SecondBrainNotificationListener : NotificationListenerService() {
         preferences.edit().putLong("notification_last_captured_at", System.currentTimeMillis()).apply()
         SyncWorker.enqueueNotification(this, server, token, sbn.packageName, title, text.ifBlank { title })
     }
+
+    private fun isNoiseNotification(sbn: StatusBarNotification, title: String, text: String): Boolean {
+        val notification = sbn.notification
+        val serviceFlags = Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE
+        if (notification.flags and serviceFlags != 0) return true
+        if (notification.category == Notification.CATEGORY_SERVICE || notification.category == Notification.CATEGORY_SYSTEM) return true
+        if (sbn.packageName == packageName || sbn.packageName in noisyPackages || noisyPackagePrefixes.any { sbn.packageName.startsWith(it) }) return true
+        val combined = "$title$text".replace(" ", "")
+        return noisyText.any { combined.contains(it) }
+    }
+
 }

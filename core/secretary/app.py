@@ -38,7 +38,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.7.8"
+APP_VERSION = "0.7.9"
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
 SECRETS = SecretStore(ROOT / "data" / ".secrets-key")
