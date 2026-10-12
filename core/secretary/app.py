@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -282,6 +283,52 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="第二大脑", version=APP_VERSION, lifespan=lifespan)
 
 PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/pair", "/api/auth/local-token"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _parse_host(value: str, default_port: int = 80) -> Optional[tuple[str, int]]:
+    """Return a normalized host and port, rejecting malformed Host values."""
+    try:
+        parsed = urlsplit("//" + value)
+        if parsed.hostname is None or parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path or parsed.query or parsed.fragment:
+            return None
+        host = parsed.hostname.rstrip(".").lower()
+        port = parsed.port if parsed.port is not None else default_port
+        if not 1 <= port <= 65535:
+            return None
+        return host, port
+    except ValueError:
+        return None
+
+
+def _allowed_host(value: str) -> bool:
+    parsed = _parse_host(value)
+    return bool(parsed and AccessControl.is_trusted_network(parsed[0]))
+
+
+def _same_origin(origin: str, host_header: str, scheme: str) -> bool:
+    try:
+        if origin == "null":
+            return False
+        origin_parts = urlsplit(origin)
+        if origin_parts.scheme.lower() != scheme.lower() or origin_parts.username or origin_parts.password:
+            return False
+        if origin_parts.path not in {"", "/"} or origin_parts.query or origin_parts.fragment:
+            return False
+        default_port = 443 if scheme.lower() == "https" else 80
+        origin_host = _parse_host(origin_parts.netloc, default_port)
+        request_host = _parse_host(host_header, default_port)
+        if not origin_host or not request_host:
+            return False
+        origin_port = origin_parts.port or default_port
+    except ValueError:
+        return False
+    # Host headers omit the scheme's default port.  Normalize both sides
+    # before comparing so `http://localhost` matches `Host: localhost:80`.
+    request_port = request_host[1]
+    return origin_host[0] == request_host[0] and origin_port == request_port
 
 
 def request_token(request: Request) -> Optional[str]:
@@ -294,6 +341,19 @@ def request_token(request: Request) -> Optional[str]:
 @app.middleware("http")
 async def protect_personal_api(request: Request, call_next):
     path = request.url.path
+    host_header = request.headers.get("host", "")
+    if not _allowed_host(host_header):
+        return JSONResponse({"detail": "不接受此 Host；请通过 localhost 或本机/局域网 IP 访问"}, status_code=400)
+
+    origin = request.headers.get("origin")
+    if origin and not _same_origin(origin, host_header, request.url.scheme):
+        return JSONResponse({"detail": "请求来源与当前站点不一致"}, status_code=403)
+
+    authorization = request.headers.get("authorization", "")
+    cookie_token = request.cookies.get("second_brain_token")
+    if request.method not in SAFE_METHODS and cookie_token and not authorization and not origin:
+        return JSONResponse({"detail": "使用浏览器 Cookie 的写请求必须提供同源 Origin"}, status_code=403)
+
     if path.startswith("/api/") and not ACCESS.is_trusted_network(request.client.host if request.client else None):
         return JSONResponse({"detail": "只允许本机或可信局域网设备访问"}, status_code=403)
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS:
