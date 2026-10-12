@@ -23,12 +23,14 @@ data class MapSpec(
     val longitude: Double?,
 )
 data class MapConfig(val apiKey: String, val securityCode: String)
+data class GuidedQuestion(val question: String, val options: List<String>)
 data class ChatExchange(
     val id: Long,
     val createdAt: String,
     val user: String,
     val assistant: String,
     val maps: List<MapSpec>,
+    val guidance: GuidedQuestion?,
 )
 data class CollectedEvent(val id: Long, val createdAt: String, val source: String, val kind: String, val title: String, val content: String)
 data class UploadReceipt(val name: String, val summary: String)
@@ -87,7 +89,14 @@ object ApiClient {
                             ))
                         }
                     }
-                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps))
+                    val guidanceObject = item.optJSONObject("attachments")?.optJSONObject("guidance")
+                    val guidance = guidanceObject?.let { guide ->
+                        val options = guide.optJSONArray("options")?.let { values ->
+                            buildList { for (optionIndex in 0 until values.length()) add(values.optString(optionIndex)) }
+                        }.orEmpty().filter { it.isNotBlank() }
+                        GuidedQuestion(guide.optString("question"), options).takeIf { it.question.isNotBlank() && it.options.isNotEmpty() }
+                    }
+                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps, guidance))
                 }
             }
         }

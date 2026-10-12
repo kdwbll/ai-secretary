@@ -56,6 +56,19 @@ class ChatHistoryTests(TestCase):
             service.chat("再补充一项")
             self.assertNotEqual(service.chat_state()["signature"], signature)
 
+    def test_guided_follow_up_is_saved_as_a_structured_attachment(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.models.complete.return_value = "先处理最要紧的一项。\n\n[[guide: 你想先整理哪一份？ | 今晚待办 | 本周清单]]"
+
+            result = service.chat("最近有什么要紧的事")
+
+            self.assertNotIn("[[guide:", result["answer"])
+            self.assertEqual(result["attachments"]["guidance"], {
+                "question": "你想先整理哪一份？", "options": ["今晚待办", "本周清单"],
+            })
+            self.assertEqual(service.chat_history()[0]["attachments"]["guidance"]["options"], ["今晚待办", "本周清单"])
+
     def test_system_service_notification_is_not_saved(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))

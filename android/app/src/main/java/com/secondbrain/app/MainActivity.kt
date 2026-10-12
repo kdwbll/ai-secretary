@@ -25,6 +25,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -264,6 +265,29 @@ fun SecondBrainApp(intent: Intent?) {
         )
     }
 
+    fun sendMessage(rawMessage: String) {
+        val message = rawMessage.trim()
+        if (message.isBlank() || sending) return
+        draft = ""
+        sending = true
+        notice = "正在发送并等待回复…"
+        scope.launch {
+            runCatching { ApiClient.sendChat(server, token, message) }
+                .onSuccess {
+                    notice = "发送成功，电脑端也会同步显示"
+                    val updated = ApiClient.chats(server, token)
+                    chats = updated
+                    if (updated.any { it.maps.isNotEmpty() }) {
+                        runCatching { ApiClient.mapConfig(server, token) }
+                            .onSuccess { mapConfig = it }
+                            .onFailure { notice = "地图配置读取失败：${it.message}" }
+                    }
+                }
+                .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); notice = "电脑暂时不可达，消息已进入离线队列" }
+            sending = false
+        }
+    }
+
     val workspaceColors = lightColorScheme(
         primary = Forest,
         onPrimary = Color.White,
@@ -305,33 +329,10 @@ fun SecondBrainApp(intent: Intent?) {
             Column(Modifier.fillMaxSize().padding(padding).background(Paper)) {
                 Text(notice, Modifier.fillMaxWidth().background(if (connected == true) Color(0xFFE6EEE8) else Color(0xFFF2E7E2)).padding(horizontal = 16.dp, vertical = 9.dp), style = MaterialTheme.typography.bodySmall)
                 when (selectedTab) {
-                    0 -> ConversationScreen(server, chats, mapConfig, draft, { draft = it }, sending, uploading, onSend = {
-                        val message = draft.trim()
-                        if (message.isNotEmpty()) {
-                            draft = ""
-                            sending = true
-                            notice = "正在发送并等待回复…"
-                            scope.launch {
-                                runCatching { ApiClient.sendChat(server, token, message) }
-                                    .onSuccess {
-                                        notice = "发送成功，电脑端也会同步显示"
-                                        val updated = ApiClient.chats(server, token)
-                                        chats = updated
-                                        // A map attachment can be created by this very reply.  Fetch the
-                                        // computer's AMap configuration at the same time; otherwise the
-                                        // card incorrectly remains in the "no key" state until a later
-                                        // manual refresh.
-                                        if (updated.any { it.maps.isNotEmpty() }) {
-                                            runCatching { ApiClient.mapConfig(server, token) }
-                                                .onSuccess { mapConfig = it }
-                                                .onFailure { notice = "地图配置读取失败：${it.message}" }
-                                        }
-                                    }
-                                    .onFailure { SyncWorker.enqueueChat(context, server.trimEnd('/'), token, message); notice = "电脑暂时不可达，消息已进入离线队列" }
-                                sending = false
-                            }
-                        }
-                    }, onPickFiles = { filePicker.launch(arrayOf("*/*")) })
+                    0 -> ConversationScreen(server, chats, mapConfig, draft, { draft = it }, sending, uploading,
+                        onSend = { sendMessage(draft) },
+                        onQuickReply = { choice -> sendMessage("针对你刚才的问题，我选择：$choice") },
+                        onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
                     else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
@@ -373,7 +374,7 @@ fun SecondBrainApp(intent: Intent?) {
 }
 
 @Composable
-private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onPickFiles: () -> Unit) {
+private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onQuickReply: (String) -> Unit, onPickFiles: () -> Unit) {
     val listState = rememberLazyListState()
     LaunchedEffect(chats.size, chats.lastOrNull()?.assistant) {
         if (chats.isNotEmpty()) listState.scrollToItem(chats.lastIndex)
@@ -382,27 +383,61 @@ private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapCon
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
             if (chats.isEmpty()) item { Text("这里会实时显示手机和电脑两端的会话。", color = Color.Gray, modifier = Modifier.padding(12.dp)) }
             items(chats, key = { it.id }) { chat ->
-                MessageBubble(server, chat.user, true, emptyList(), mapConfig)
-                MessageBubble(server, chat.assistant.ifBlank { "正在处理…" }, false, chat.maps, mapConfig)
+                val guidance = chat.guidance ?: guideFromText(chat.assistant)
+                val assistantText = if (chat.guidance == null && guidance != null) collapseLegacyFollowups(chat.assistant) else chat.assistant
+                MessageBubble(server, chat.user, true, emptyList(), mapConfig, null, false, onQuickReply)
+                MessageBubble(server, assistantText.ifBlank { "正在处理…" }, false, chat.maps, mapConfig, guidance, chat.id == chats.lastOrNull()?.id, onQuickReply)
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = onPickFiles, enabled = !uploading) { Text(if (uploading) "上传中" else "文件") }
-            OutlinedTextField(draft, onDraft, Modifier.weight(1f), placeholder = { Text("输入消息…") }, maxLines = 4)
-            Button(onClick = onSend, enabled = draft.isNotBlank() && !sending) { Text(if (sending) "…" else "发送") }
+        Surface(Modifier.fillMaxWidth().padding(top = 5.dp), shape = RoundedCornerShape(25.dp), color = Color(0xFFFFFDF8), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD2D8D1))) {
+            Row(Modifier.fillMaxWidth().padding(start = 5.dp, end = 6.dp, top = 5.dp, bottom = 5.dp), verticalAlignment = Alignment.Bottom) {
+                TextButton(onClick = onPickFiles, enabled = !uploading, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) { Text(if (uploading) "…" else "＋", style = MaterialTheme.typography.titleLarge, color = Forest) }
+                BasicTextField(value = draft, onValueChange = onDraft, modifier = Modifier.weight(1f).padding(vertical = 9.dp), textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink), maxLines = 5, decorationBox = { inner -> if (draft.isBlank()) Text("给第二大脑发消息…", color = Color.Gray); inner() })
+                FilledIconButton(onClick = onSend, enabled = draft.isNotBlank() && !sending, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Forest), modifier = Modifier.size(42.dp)) { Text(if (sending) "…" else "↑", color = Color.White, style = MaterialTheme.typography.titleMedium) }
+            }
         }
     }
 }
 
 @Composable
-private fun MessageBubble(server: String, text: String, fromUser: Boolean, maps: List<MapSpec>, mapConfig: MapConfig?) {
+private fun MessageBubble(server: String, text: String, fromUser: Boolean, maps: List<MapSpec>, mapConfig: MapConfig?, guidance: GuidedQuestion?, interactive: Boolean, onChoice: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
         Surface(color = if (fromUser) Forest else Color(0xFFFFFDF8), shape = RoundedCornerShape(15.dp), tonalElevation = if (fromUser) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 310.dp)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (fromUser) Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
                 else MarkdownText(text)
                 maps.forEach { spec -> AmapCard(server, spec, mapConfig) }
+                if (!fromUser && interactive && guidance != null) GuidedChoices(guidance, onChoice)
             }
+        }
+    }
+}
+
+private fun guideFromText(text: String): GuidedQuestion? {
+    val match = Regex("要我[^“”\\\"]{0,50}[“\\\"]([^“”\\\"]{2,60})[”\\\"][^。！？!?]{0,24}(?:或者|还是|或)[“\\\"]([^“”\\\"]{2,60})[”\\\"]").find(text) ?: return null
+    return GuidedQuestion("你想先怎么做？", listOf(match.groupValues[1], match.groupValues[2]))
+}
+
+private fun collapseLegacyFollowups(text: String): String {
+    if (guideFromText(text) == null) return text
+    val start = text.indexOf("要我")
+    val end = text.indexOf("？", start)
+    return if (start >= 0 && end >= start) text.substring(0, end + 1) else text
+}
+
+@Composable
+private fun GuidedChoices(guidance: GuidedQuestion, onChoice: (String) -> Unit) {
+    var otherOpen by remember { mutableStateOf(false) }
+    var other by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().background(Color(0xFFF1F7F1), RoundedCornerShape(12.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text("下一步 · ${guidance.question}", style = MaterialTheme.typography.labelMedium, color = Forest)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            items(guidance.options.take(6)) { option -> OutlinedButton(onClick = { onChoice(option) }, contentPadding = PaddingValues(horizontal = 11.dp, vertical = 2.dp)) { Text(option, maxLines = 1) } }
+            item { OutlinedButton(onClick = { otherOpen = true }, contentPadding = PaddingValues(horizontal = 11.dp, vertical = 2.dp)) { Text("其他…") } }
+        }
+        if (otherOpen) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            OutlinedTextField(other, { other = it }, Modifier.weight(1f), placeholder = { Text("输入你的答案") }, singleLine = true)
+            Button(onClick = { if (other.isNotBlank()) onChoice(other.trim()) }, enabled = other.isNotBlank()) { Text("继续") }
         }
     }
 }

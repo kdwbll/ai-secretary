@@ -836,4 +836,7 @@ app.mount("/assets", StaticFiles(directory=str(WEB)), name="assets")
 
 @app.get("/{path:path}", include_in_schema=False)
 def frontend(path: str = ""):
-    return FileResponse(WEB / "index.html")
+    # The workspace is a local single-page app.  Never let a browser retain an
+    # old HTML shell after an in-place desktop update; its asset revisions then
+    # reliably select the matching JavaScript and styles.
+    return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-store"})
