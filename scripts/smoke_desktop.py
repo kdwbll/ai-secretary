@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -15,6 +16,8 @@ from pathlib import Path
 
 def main() -> None:
     executable = Path(sys.argv[1]).resolve()
+    app_source = (Path(__file__).resolve().parents[1] / "core/secretary/app.py").read_text(encoding="utf-8")
+    expected_version = re.search(r'APP_VERSION = "([^"]+)"', app_source).group(1)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -38,7 +41,7 @@ def main() -> None:
                     time.sleep(0.2)
             else:
                 raise RuntimeError("App startup timed out")
-            assert health["ok"] and health["version"] == "0.8.1", health
+            assert health["ok"] and health["version"] == expected_version, health
             with opener.open(url, timeout=5) as response:
                 assert "第二大脑" in response.read().decode("utf-8")
             with opener.open(url + "/api/auth/local-token", timeout=5) as response:

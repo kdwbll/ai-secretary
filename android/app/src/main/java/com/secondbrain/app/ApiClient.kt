@@ -24,6 +24,7 @@ data class MapSpec(
 )
 data class MapConfig(val apiKey: String, val securityCode: String)
 data class GuidedQuestion(val question: String, val options: List<String>)
+data class MemoryCandidate(val id: Long, val fact: String, val reason: String)
 data class ChatExchange(
     val id: Long,
     val createdAt: String,
@@ -32,6 +33,7 @@ data class ChatExchange(
     val maps: List<MapSpec>,
     val guidance: GuidedQuestion?,
     val memoryFailed: Boolean = false,
+    val memoryCandidates: List<MemoryCandidate> = emptyList(),
 )
 data class CollectedEvent(val id: Long, val createdAt: String, val source: String, val kind: String, val title: String, val content: String)
 data class UploadReceipt(val name: String, val summary: String)
@@ -97,7 +99,13 @@ object ApiClient {
                         }.orEmpty().filter { it.isNotBlank() }
                         GuidedQuestion(guide.optString("question"), options).takeIf { it.question.isNotBlank() && it.options.isNotEmpty() }
                     }
-                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps, guidance, item.optJSONObject("attachments")?.optString("memory_status") == "failed"))
+                    val candidates = item.optJSONObject("attachments")?.optJSONArray("memory_candidates")?.let { values ->
+                        buildList { for (index in 0 until values.length()) {
+                            val candidate = values.getJSONObject(index)
+                            add(MemoryCandidate(candidate.getLong("id"), candidate.optString("fact"), candidate.optString("reason")))
+                        } }
+                    }.orEmpty()
+                    add(ChatExchange(item.getLong("id"), item.optString("created_at"), item.optString("user_message"), item.optString("assistant_message"), maps, guidance, item.optJSONObject("attachments")?.optString("memory_status") == "failed", candidates))
                 }
             }
         }
@@ -108,6 +116,13 @@ object ApiClient {
             if (!response.isSuccessful) error("读取地图配置失败（${response.code}）")
             val result = JSONObject(response.body?.string().orEmpty())
             MapConfig(result.optString("api_key"), result.optString("security_code"))
+        }
+    }
+
+    suspend fun resolveMemory(server: String, token: String, candidateId: Long, accept: Boolean) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("accept", accept).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/memory-candidates/$candidateId/resolve", token).post(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("处理待确认记忆失败（${response.code}）")
         }
     }
 

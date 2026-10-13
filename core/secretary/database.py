@@ -166,6 +166,23 @@ def _purge_noise_notifications(db: sqlite3.Connection) -> None:
         db.executemany("DELETE FROM events WHERE id=?", stale_ids)
 
 
+def _add_memory_index(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS memory_documents (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
+               "content TEXT NOT NULL, terms TEXT NOT NULL, summary TEXT NOT NULL, fingerprint TEXT NOT NULL)")
+    db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(terms, content='memory_documents', content_rowid='id')")
+    db.execute("CREATE TRIGGER IF NOT EXISTS memory_insert AFTER INSERT ON memory_documents BEGIN "
+               "INSERT INTO memory_search(rowid,terms) VALUES(new.id,new.terms); END")
+    db.execute("CREATE TRIGGER IF NOT EXISTS memory_delete AFTER DELETE ON memory_documents BEGIN "
+               "INSERT INTO memory_search(memory_search,rowid,terms) VALUES('delete',old.id,old.terms); END")
+    db.execute("CREATE TRIGGER IF NOT EXISTS memory_update AFTER UPDATE ON memory_documents BEGIN "
+               "INSERT INTO memory_search(memory_search,rowid,terms) VALUES('delete',old.id,old.terms); "
+               "INSERT INTO memory_search(rowid,terms) VALUES(new.id,new.terms); END")
+    db.execute("CREATE TABLE IF NOT EXISTS memory_candidates (id INTEGER PRIMARY KEY, path TEXT NOT NULL, section TEXT NOT NULL, "
+               "fact TEXT NOT NULL, source TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+               "created_at TEXT NOT NULL, UNIQUE(path,section,fact,source))")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_memory_candidates_status ON memory_candidates(status,id)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -176,6 +193,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "switch default web search to bocha", _switch_default_search_to_bocha),
     Migration(8, "index collected calendar events", _add_calendar_event_index),
     Migration(9, "remove noisy Android service notifications", _purge_noise_notifications),
+    Migration(10, "add incremental memory search and confirmation queue", _add_memory_index),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -233,6 +251,8 @@ class Database:
             "chat_messages": {"attachments", "title"},
             "locations": {"source", "latitude", "longitude", "enabled"},
             "notifications": {"kind", "title", "body"},
+            "memory_documents": {"path", "content", "terms", "summary", "fingerprint"},
+            "memory_candidates": {"path", "section", "fact", "source", "reason", "status"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:
