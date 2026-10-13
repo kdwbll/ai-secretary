@@ -1,0 +1,49 @@
+{
+  "benchmark": "real-markdown-memory-index",
+  "notes": 3000,
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.9.6",
+  "timings_ms": {
+    "cold_index": 4058.782,
+    "warm_reconcile": 142.126,
+    "incremental_update": 144.099,
+    "search_p50": 0.27,
+    "search_p95": 0.312,
+    "search_max": 0.565
+  },
+  "io": {
+    "warm_reconcile": {
+      "directory_scans": 1,
+      "markdown_reads": 0
+    },
+    "indexed_searches": {
+      "directory_scans": 0,
+      "markdown_reads": 0
+    },
+    "incremental_update": {
+      "directory_scans": 1,
+      "markdown_reads": 1
+    }
+  },
+  "limits_ms": {
+    "cold_index": 15000.0,
+    "warm_reconcile": 2500.0,
+    "incremental_update": 1000.0,
+    "search_p95": 100.0
+  },
+  "checks": {
+    "all_markdown_files_indexed": true,
+    "warm_reconcile_reads_no_markdown": true,
+    "search_scans_no_directories": true,
+    "search_reads_no_markdown": true,
+    "incremental_reads_one_markdown": true,
+    "changed_note_is_searchable": true
+  },
+  "thresholds": {
+    "cold_index": true,
+    "warm_reconcile": true,
+    "incremental_update": true,
+    "search_p95": true
+  },
+  "passed": true
+}
