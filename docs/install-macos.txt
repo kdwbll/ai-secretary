@@ -1,4 +1,4 @@
-SecondBrain 0.8.1 for macOS
+SecondBrain for macOS
 
 1. Open the DMG and drag SecondBrain.app into Applications.
 2. Open SecondBrain from Applications. Your browser opens automatically.
