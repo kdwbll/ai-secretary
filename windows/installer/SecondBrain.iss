@@ -1,5 +1,5 @@
 #define MyAppName "SecondBrain"
-#define MyAppVersion "0.8.2"
+#define MyAppVersion "0.11.0"
 #define MyAppPublisher "SecondBrain"
 #define MyAppExeName "SecondBrain.exe"
 
