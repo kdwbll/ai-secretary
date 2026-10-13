@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from datetime import date
 
 from core.secretary.database import Database
@@ -105,6 +105,56 @@ class ChatHistoryTests(TestCase):
             self.assertIn("我经常去春熙路玩", interests)
             self.assertIn(f"对话 #{result['id']}", interests)
             self.assertNotIn("我经常去春熙路玩", habits)
+
+    def test_negation_and_mixed_clauses_preserve_meaning(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service._extract_local_fact("我不去游乐场玩，但我喜欢不同风格的音乐")
+            doc = service.memory.parse("interests.md")
+            positive = doc.body.split("## 常去地点", 1)[1].split("## ", 1)[0]
+            self.assertNotIn("游乐场", positive)
+            self.assertIn("## 避让与不喜欢", doc.body)
+            self.assertIn("我不去游乐场玩", doc.body)
+            self.assertIn("我喜欢不同风格的音乐", doc.body.split("## 兴趣与娱乐", 1)[1].split("## ", 1)[0])
+
+    def test_questions_quotes_and_other_people_are_not_self_facts(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            before = service.memory.storage.read_text("interests.md")
+            for text in ("我喜欢电影吗？", "他说我喜欢音乐", "我的朋友喜欢游戏", "我听他说喜欢音乐", "请记住他说：我喜欢音乐"):
+                service._extract_local_fact(text)
+            self.assertEqual(service.memory.storage.read_text("interests.md"), before)
+
+    def test_uncertain_facts_require_confirmation_without_model_calls(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            result = service.chat("我可能对花生过敏")
+            candidates = result["attachments"]["memory_candidates"]
+            self.assertEqual(len(candidates), 1)
+            self.assertNotIn("花生", service.memory.storage.read_text("health.md"))
+            calls = len(service.database.rows("SELECT id FROM ai_calls"))
+            service.memory.resolve_fact(candidates[0]["id"], True)
+            self.assertIn("我可能对花生过敏", service.memory.storage.read_text("health.md"))
+            self.assertEqual(service.chat_history()[0]["attachments"]["memory_candidates"], [])
+            self.assertEqual(calls, len(service.database.rows("SELECT id FROM ai_calls")))
+            with self.assertRaises(ValueError):
+                service.memory.resolve_fact(candidates[0]["id"], True)
+
+    def test_plan_one_time_habit_and_double_negative_can_be_rejected(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            for text in ("我计划每天运动", "我今天运动", "我不是不喜欢音乐", "也许我喜欢电影"):
+                pending = service._extract_local_fact(text)
+                self.assertEqual(len(pending), 1, text)
+                service.memory.resolve_fact(pending[0]["id"], False)
+            self.assertEqual(service.memory.pending_facts(), [])
+            self.assertNotIn("我今天运动", service.memory.storage.read_text("habits.md"))
+
+    def test_context_reads_only_selected_notes_and_recent_days(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            with patch.object(service.memory.storage, "list", side_effect=AssertionError("scan")):
+                service._context("运动")
 
     def test_health_question_is_not_saved_as_a_health_fact(self):
         with TemporaryDirectory() as directory:

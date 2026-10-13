@@ -23,6 +23,11 @@ class Storage(ABC):
     @abstractmethod
     def list(self, suffix: str = "") -> Iterable[str]: ...
 
+    def fingerprint(self, relative: str) -> str:
+        # Alternate storage implementations can override with their revision id.
+        import hashlib
+        return hashlib.sha256(self.read_text(relative).encode("utf-8")).hexdigest()
+
 
 class LocalStorage(Storage):
     def __init__(self, root: Path):
@@ -37,6 +42,10 @@ class LocalStorage(Storage):
 
     def read_text(self, relative: str) -> str:
         return self._path(relative).read_text(encoding="utf-8")
+
+    def fingerprint(self, relative: str) -> str:
+        stat = self._path(relative).stat()
+        return f"{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_size}"
 
     def repair_utf8(self, relative: str) -> str:
         """Keep a byte-for-byte backup, then normalize a damaged text file to UTF-8."""
