@@ -49,4 +49,5 @@ jobs:
         shell: pwsh
         run: |
           $installer = Get-ChildItem dist-installer\SecondBrain-Setup-*.exe | Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME $installer.FullName --title "SecondBrain $env:GITHUB_REF_NAME" --notes-file docs/release-0.8.1.md
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          gh release create $env:GITHUB_REF_NAME $installer.FullName --title "SecondBrain $env:GITHUB_REF_NAME" --notes-file "docs/release-$version.md"
