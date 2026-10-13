@@ -40,7 +40,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.11.0"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
