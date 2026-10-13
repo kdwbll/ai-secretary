@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+from unittest.mock import patch
 
 from core.secretary.database import Database
 from core.secretary.memory import MemoryEngine
@@ -23,6 +24,50 @@ class MemoryTests(unittest.TestCase):
         doc = self.memory.parse("me.md")
         self.assertEqual(doc.metadata["type"], "user")
         self.assertIn("me.md", self.memory.storage.read_text("index.md"))
+
+    def test_search_and_rebuild_do_not_scan_or_read_unchanged_files(self):
+        self.memory.upsert_fact("health.md", "当前状况", "对花生过敏", "测试")
+        self.memory.rebuild_index()
+        with patch.object(self.memory.storage, "list", side_effect=AssertionError("directory scan")), \
+             patch.object(self.memory.storage, "read_text", side_effect=AssertionError("file read")), \
+             patch.object(self.memory.storage, "write_text", side_effect=AssertionError("index rewrite")):
+            self.assertEqual(self.memory.search("花生过敏")[0]["path"], "health.md")
+            self.memory.rebuild_index()
+
+    def test_external_changes_deletion_and_invalid_files_reconcile_incrementally(self):
+        with patch.object(self.memory.storage, "read_text", wraps=self.memory.storage.read_text) as read:
+            self.memory.sync_index()
+            self.assertEqual(read.call_count, 0)
+        raw = self.memory.storage.read_text("health.md").replace("## 当前状况", "## 当前状况\n- 对猫毛过敏")
+        self.memory.storage.write_text("health.md", raw)
+        with patch.object(self.memory.storage, "read_text", wraps=self.memory.storage.read_text) as read:
+            self.memory.sync_index()
+            self.assertEqual([call.args[0] for call in read.call_args_list], ["health.md"])
+        self.assertEqual(self.memory.search("猫毛")[0]["path"], "health.md")
+        self.memory.storage.delete("health.md")
+        self.memory.sync_index()
+        self.assertEqual(self.memory.search("猫毛"), [])
+        self.memory.storage.write_text("me.md", "invalid document")
+        self.memory.sync_index()
+        self.assertFalse(self.db.rows("SELECT path FROM memory_documents WHERE path='me.md'"))
+
+    def test_index_survives_restart_and_undo_updates_search(self):
+        self.memory.upsert_fact("finance.md", "收支与预算", "budgetmarker 3000", "测试")
+        mutation = self.db.rows("SELECT max(id) AS id FROM mutations WHERE path='finance.md'")[0]["id"]
+        restarted = MemoryEngine(self.memory.storage, self.db)
+        restarted.initialize()
+        self.assertEqual(restarted.search("budgetmarker")[0]["path"], "finance.md")
+        restarted.undo(mutation)
+        self.assertEqual(restarted.search("budgetmarker"), [])
+
+    def test_thousands_of_notes_search_without_markdown_reads(self):
+        # Populate the derived cache in one transaction; retrieval must use its index.
+        with self.db.connect() as db:
+            db.executemany("INSERT INTO memory_documents(path,content,terms,summary,fingerprint) VALUES(?,?,?,?,?)",
+                [(f"daily/archive-{n}.md", f"archiveitem{n}", f"archiveitem{n}", "archive", "test") for n in range(3000)])
+        with patch.object(self.memory.storage, "read_text", side_effect=AssertionError("read")), \
+             patch.object(self.memory.storage, "list", side_effect=AssertionError("scan")):
+            self.assertEqual(self.memory.search("archiveitem2999")[0]["path"], "daily/archive-2999.md")
 
     def test_rewrite_instead_of_append(self):
         self.memory.upsert_fact("habits.md", "作息", "通常 23:00 睡", "测试")

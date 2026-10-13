@@ -337,6 +337,11 @@ fun SecondBrainApp(intent: Intent?) {
                                 .onSuccess { saved -> notice = if (saved) "记忆已保存" else "记忆仍未保存，请检查电脑文件权限"; chats = ApiClient.chats(server, token) }
                                 .onFailure { notice = "保存失败：${it.message}" }
                         } },
+                        onResolveMemory = { candidateId, accept ->
+                            runCatching { ApiClient.resolveMemory(server, token, candidateId, accept) }
+                                .onSuccess { notice = if (accept) "已确认并保存记忆" else "已忽略这条记忆"; chats = ApiClient.chats(server, token) }
+                                .onFailure { notice = "处理失败：${it.message}" }
+                        },
                         onPickFiles = { filePicker.launch(arrayOf("*/*")) })
                     1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
                     2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
@@ -379,8 +384,9 @@ fun SecondBrainApp(intent: Intent?) {
 }
 
 @Composable
-private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onQuickReply: (String) -> Unit, onRetryMemory: (Long) -> Unit, onPickFiles: () -> Unit) {
+private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapConfig: MapConfig?, draft: String, onDraft: (String) -> Unit, sending: Boolean, uploading: Boolean, onSend: () -> Unit, onQuickReply: (String) -> Unit, onRetryMemory: (Long) -> Unit, onResolveMemory: suspend (Long, Boolean) -> Unit, onPickFiles: () -> Unit) {
     val listState = rememberLazyListState()
+    val confirmationScope = rememberCoroutineScope()
     LaunchedEffect(chats.size, chats.lastOrNull()?.assistant) {
         if (chats.isNotEmpty()) listState.scrollToItem(chats.lastIndex)
     }
@@ -395,6 +401,19 @@ private fun ConversationScreen(server: String, chats: List<ChatExchange>, mapCon
                 if (chat.memoryFailed) {
                     Text("回答已完成，部分记忆尚未保存。", color = WarmAccent, style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = { onRetryMemory(chat.id) }) { Text("重试保存记忆") }
+                }
+                chat.memoryCandidates.forEach { candidate ->
+                    var deciding by remember(candidate.id) { mutableStateOf(false) }
+                    Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFFE6EEE8)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                            Text("待确认记忆：${candidate.fact}", style = MaterialTheme.typography.bodyMedium)
+                            Text(candidate.reason, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Row {
+                                TextButton(enabled = !deciding, onClick = { deciding = true; confirmationScope.launch { try { onResolveMemory(candidate.id, true) } finally { deciding = false } } }) { Text("确认保存") }
+                                TextButton(enabled = !deciding, onClick = { deciding = true; confirmationScope.launch { try { onResolveMemory(candidate.id, false) } finally { deciding = false } } }) { Text("不保存") }
+                            }
+                        }
+                    }
                 }
             }
         }

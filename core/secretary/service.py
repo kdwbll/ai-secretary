@@ -86,8 +86,7 @@ class SecretaryService:
         paths = self.choose_context(message, limit)
         for offset in range(3):
             daily = f"daily/{(date.today() - timedelta(days=offset)).isoformat()}.md"
-            if daily in set(self.memory.storage.list(".md")):
-                paths.append(daily)
+            paths.append(daily)
         sections = []
         for path in dict.fromkeys(paths):
             try:
@@ -96,6 +95,8 @@ class SecretaryService:
                 # One incomplete or malformed note should not block the whole assistant.
                 continue
         context = self._time_context() + "\n\n" + "\n\n".join(sections)
+        context += "\n\n记忆使用规则：日记是原始对话记录，可能包含问题、假设、否定或他人说法。"
+        context += "不得把这些内容当作已确认偏好；保留否定与条件，不确定的信息应询问用户确认。"
         if location_plan and location_plan.get("show"):
             location_context = self._location_context()
             if location_context:
@@ -653,7 +654,7 @@ class SecretaryService:
                     self.memory.append_daily(f"用户：{message}\n  - 助理：{answer}", f"对话 #{chat_id}")
                     progress.append("daily")
                 if "fact" not in progress:
-                    self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
+                    attachments["memory_candidates"] = self._extract_local_fact(message, f"{date.today().isoformat()} 对话 #{chat_id}")
                     progress.append("fact")
                 if "index" not in progress:
                     self.memory.rebuild_index()
@@ -701,9 +702,12 @@ class SecretaryService:
                 "SELECT id,created_at,user_message,assistant_message,sources,provider,model,attachments,title FROM chat_messages ORDER BY id DESC LIMIT ?",
                 (max(1, min(limit, 500)),),
             )
+        pending = {item["id"]: item for item in self.memory.pending_facts(1000)}
         for row in rows:
             row["sources"] = json.loads(row["sources"] or "[]")
             row["attachments"] = json.loads(row["attachments"] or "{}")
+            row["attachments"]["memory_candidates"] = [pending[item["id"]] for item in
+                row["attachments"].get("memory_candidates", []) if item["id"] in pending]
             if not self._wants_history_images(row["user_message"]):
                 row["attachments"]["assistant_files"] = []
         return rows
@@ -727,7 +731,7 @@ class SecretaryService:
         signature = ":".join(str(row[key] or 0) for key in (
             "id", "created_at", "user_size", "answer_size", "attachment_size",
         ))
-        return {"signature": signature}
+        return {"signature": signature + ":" + (self.database.setting("memory_candidate_revision", "0") or "0")}
 
     def delete_chat(self, chat_id: int, delete_memory: bool = False) -> dict[str, Any]:
         if not self.database.rows("SELECT id FROM chat_messages WHERE id=?", (chat_id,)):
@@ -798,26 +802,44 @@ class SecretaryService:
         lines.append("建议重点观察至少 2–4 周的连续趋势；若心率、睡眠或体重出现持续异常或伴随不适，请咨询医生。")
         return "\n".join(lines)
 
-    def _extract_local_fact(self, message: str, source: Optional[str] = None) -> None:
-        if len(message) < 4 or message.endswith("?") or message.endswith("？"):
-            return
-        if re.match(r"^(?:请|帮我|给我|能否|可以|怎么|如何|为什么|分析|告诉我|看看|查看|总结)", message):
-            return
-        location_statement = re.search(r"(?:经常|常常|常去|喜欢)?去([^，。！？!?]{2,18}?)(?:玩|逛|吃饭|散步|运动|购物)(?:[，。！？!?]|$)", message)
-        if location_statement:
-            self.memory.upsert_fact(
-                "interests.md",
-                "常去地点",
-                message.rstrip("。"),
-                source or f"{date.today().isoformat()} 对话",
-            )
-            return
-        best = max(DOMAIN_HINTS.items(), key=lambda item: sum(h in message for h in item[1]))
-        if sum(h in message for h in best[1]) == 0:
-            return
-        repeated = any(word in message for word in ("每天", "经常", "通常", "习惯"))
-        section = {"health.md": "当前状况", "finance.md": "收支与预算", "habits.md": "作息", "work-study.md": "当前事项", "interests.md": "兴趣与娱乐", "me.md": "基本信息"}[best[0]]
-        self.memory.upsert_fact(best[0], section, message.rstrip("。"), source or f"{date.today().isoformat()} 对话", inferred=not repeated and best[0] == "habits.md")
+    def _extract_local_fact(self, message: str, source: Optional[str] = None) -> list[dict]:
+        """Conservative clause-level extraction; uncertain claims await a human decision."""
+        source = source or f"{date.today().isoformat()} 对话"
+        pending = []
+        for clause in re.split(r"[，。；;\n]", message.strip()):
+            clause = clause.strip()
+            clause = re.sub(r"^(?:但是|不过|但|而且|并且|同时)", "", clause).strip()
+            if len(clause) < 4 or re.search(r"[?？]|(?:吗|么|呢)[!！]?$", clause):
+                continue
+            if not re.match(r"^(?:(?:也许|或许|可能|如果|假如|要是)\s*)?(?:我|本人|每天|经常|常常|通常|习惯)", clause):
+                continue  # Instructions, quoted third-party statements and questions are not self facts.
+            if re.match(r"^(?:我的?)(?:朋友|同事|同学|父亲|母亲|爸|妈|老师|孩子|家人)|^我(?:听说|听.*说|转述)", clause):
+                continue
+            if re.search(r"(?:说|问|写道|提到)[：:]?[‘“\"']|例如|比如|举例", clause):
+                continue
+            best = max(DOMAIN_HINTS.items(), key=lambda item: sum(h in clause for h in item[1]))
+            path = best[0]
+            section = {"health.md": "当前状况", "finance.md": "收支与预算", "habits.md": "作息",
+                       "work-study.md": "当前事项", "interests.md": "兴趣与娱乐", "me.md": "基本信息"}[path]
+            repeated = bool(re.search(r"每天|经常|常常|通常|习惯|一直", clause))
+            negated = bool(re.search(r"不(?:喜欢|爱|想|愿|去|会|再|能|喝|吃|运动|熬夜|抽烟)|没有|从不|从未|拒绝|讨厌|避免|没(?:去|有|吃|喝|做|运动)", clause))
+            location = re.search(r"去([^，。！？!?]{2,18}?)(?:玩|逛|吃饭|散步|运动|购物|$)", clause)
+            preference = re.search(r"喜欢|喜爱|爱好|兴趣|讨厌", clause)
+            if location and not any(h in clause for h in DOMAIN_HINTS["health.md"]):
+                path, section = "interests.md", "避让与不喜欢" if negated else "常去地点"
+            elif preference:
+                path, section = "interests.md", "避让与不喜欢" if negated else "兴趣与娱乐"
+            elif not any(h in clause for h in best[1]):
+                continue
+            if path == "habits.md":
+                section = "运动" if "运动" in clause else "饮食" if "饮食" in clause else "作息"
+            uncertain = bool(re.search(r"可能|也许|或许|大概|不确定|不一定|好像|似乎|应该|打算|准备|计划|如果|假如|要是|不是不|并非不|没有不|我觉得|我猜|我想", clause))
+            if uncertain or (path == "habits.md" and not repeated and not negated) or (location and not repeated and not negated and not preference):
+                reason = "包含不确定、计划或条件，需要确认" if uncertain else "一次经历不能确定为长期习惯或常去地点"
+                pending.append(self.memory.queue_fact(path, section, clause, source, reason))
+            else:
+                self.memory.upsert_fact(path, section, clause, source)
+        return pending
 
     def ingest_sms(self, text: str, sender: str = "") -> dict:
         event = parse_sms(text, sender)

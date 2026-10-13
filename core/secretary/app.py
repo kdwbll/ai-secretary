@@ -40,7 +40,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -70,6 +70,10 @@ class ChatDeleteInput(BaseModel):
 
 class MemoryInput(BaseModel):
     content: str
+
+
+class MemoryDecision(BaseModel):
+    accept: bool
 
 
 class ProviderInput(BaseModel):
@@ -272,6 +276,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(scheduled(REPORTS.evening), "cron", hour=review_hour, minute=review_minute, id="evening")
         scheduler.add_job(scheduled(REPORTS.weekly), "cron", day_of_week="sun", hour=23, minute=0, id="weekly")
         scheduler.add_job(scheduled(sync_email_accounts), "interval", minutes=30, id="email-sync", max_instances=1)
+        scheduler.add_job(scheduled(MEMORY.sync_index), "interval", seconds=15, id="memory-index", max_instances=1)
         scheduler.start()
     except ImportError:
         pass
@@ -531,7 +536,23 @@ def interview_complete():
 
 @app.get("/api/memory")
 def memory_list():
-    return {"files": list(MEMORY.storage.list(".md"))}
+    return {"files": list(MEMORY.storage.list(".md")), "candidates": MEMORY.pending_facts()}
+
+
+@app.get("/api/memory-candidates")
+def memory_candidates():
+    return {"candidates": MEMORY.pending_facts()}
+
+
+@app.post("/api/memory-candidates/{candidate_id}/resolve")
+def memory_decision(candidate_id: int, body: MemoryDecision):
+    try:
+        MEMORY.resolve_fact(candidate_id, body.accept)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return {"ok": True}
 
 
 @app.get("/api/memory/{path:path}")
@@ -545,15 +566,9 @@ def memory_get(path: str):
 @app.put("/api/memory/{path:path}")
 def memory_put(path: str, body: MemoryInput):
     try:
-        old = MEMORY.storage.read_text(path)
-        MEMORY.storage.write_text(path, body.content)
-        MEMORY.parse(path)
+        MEMORY.edit(path, body.content)
     except Exception as exc:
-        if 'old' in locals():
-            MEMORY.storage.write_text(path, old)
         raise HTTPException(400, f"保存失败：{exc}")
-    DB.record_mutation(path, old, body.content, "用户在记忆浏览器中编辑", "user")
-    MEMORY.rebuild_index()
     return {"ok": True}
 
 
