@@ -110,6 +110,7 @@ fun SecondBrainApp(intent: Intent?) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var connected by remember { mutableStateOf<Boolean?>(null) }
     var chats by remember { mutableStateOf<List<ChatExchange>>(emptyList()) }
+    var goals by remember { mutableStateOf<List<RemoteGoal>>(emptyList()) }
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
     var usage by remember { mutableStateOf<TokenActivity?>(null) }
@@ -147,6 +148,7 @@ fun SecondBrainApp(intent: Intent?) {
                 }
             }
             runCatching { events = ApiClient.events(server, token) }
+            runCatching { goals = ApiClient.goals(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
             runCatching {
@@ -217,7 +219,7 @@ fun SecondBrainApp(intent: Intent?) {
             if (success > 0) {
                 notice = "已上传 $success 个文件，电脑端也会显示"
                 files = ApiClient.files(server, token)
-                selectedTab = 2
+                selectedTab = 3
             }
         }
     }
@@ -320,9 +322,10 @@ fun SecondBrainApp(intent: Intent?) {
             bottomBar = {
                 NavigationBar {
                     NavigationBarItem(selected = selectedTab == 0, onClick = { selectedTab = 0 }, icon = { Text("✦") }, label = { Text("会话") })
-                    NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Text("▤") }, label = { Text("采集") })
-                    NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▣") }, label = { Text("文件") })
-                    NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Text("⚙") }, label = { Text("设置") })
+                    NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Text("◎") }, label = { Text("目标") })
+                    NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▤") }, label = { Text("采集") })
+                    NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Text("▣") }, label = { Text("文件") })
+                    NavigationBarItem(selected = selectedTab == 4, onClick = { selectedTab = 4 }, icon = { Text("⚙") }, label = { Text("设置") })
                 }
             }
         ) { padding ->
@@ -343,8 +346,21 @@ fun SecondBrainApp(intent: Intent?) {
                                 .onFailure { notice = "处理失败：${it.message}" }
                         },
                         onPickFiles = { filePicker.launch(arrayOf("*/*")) })
-                    1 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
-                    2 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
+                    1 -> GoalsScreen(goals, onCreate = { title -> scope.launch {
+                        runCatching { ApiClient.createGoal(server, token, title) }
+                            .onSuccess { notice = "目标已创建"; goals = ApiClient.goals(server, token) }
+                            .onFailure { notice = "创建目标失败：${it.message}" }
+                    } }, onGoalStatus = { goal, status -> scope.launch {
+                        runCatching { ApiClient.setGoalStatus(server, token, goal.id, status) }
+                            .onSuccess { notice = "目标状态已更新"; goals = ApiClient.goals(server, token) }
+                            .onFailure { notice = "更新目标失败：${it.message}" }
+                    } }, onTaskStatus = { task, status -> scope.launch {
+                        runCatching { ApiClient.setTaskStatus(server, token, task.id, status) }
+                            .onSuccess { goals = ApiClient.goals(server, token) }
+                            .onFailure { notice = "更新任务失败：${it.message}" }
+                    } })
+                    2 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
+                    3 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
                     else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
@@ -665,6 +681,59 @@ private fun amapHtml(spec: MapSpec, config: MapConfig): String {
         <script src="https://webapi.amap.com/maps?v=2.0&key=$encodedKey" onload="ready()" onerror="fail('地图资源加载失败，请检查手机网络')"></script>
         <script>setTimeout(()=>{if(state.style.display!=='none')fail('地图加载超时，请检查网络与高德 Key')},8000)</script></body></html>
     """.trimIndent()
+}
+
+@Composable
+private fun GoalsScreen(goals: List<RemoteGoal>, onCreate: (String) -> Unit, onGoalStatus: (RemoteGoal, String) -> Unit, onTaskStatus: (RemoteTask, String) -> Unit) {
+    var newTitle by remember { mutableStateOf("") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
+        item {
+            Text("目标与下一步", style = MaterialTheme.typography.headlineSmall)
+            Text("所有进度都保存在已配对的本机服务中。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(newTitle, { newTitle = it }, Modifier.weight(1f), placeholder = { Text("新建目标") }, singleLine = true)
+                Button(onClick = { if (newTitle.isNotBlank()) { onCreate(newTitle.trim()); newTitle = "" } }, enabled = newTitle.isNotBlank()) { Text("添加") }
+            }
+        }
+        if (goals.isEmpty()) item { Text("还没有目标。先写下一个想持续推进的方向。", color = Color.Gray, modifier = Modifier.padding(vertical = 16.dp)) }
+        items(goals, key = { it.id }) { goal ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                        Column(Modifier.weight(1f)) {
+                            Text(goal.title, style = MaterialTheme.typography.titleMedium)
+                            if (goal.description.isNotBlank()) Text(goal.description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
+                        Text("${goal.completedTasks}/${goal.taskCount}", style = MaterialTheme.typography.labelMedium, color = Forest)
+                    }
+                    Text(goalStatusLabel(goal.status) + (goal.dueAt?.let { " · 截止 $it" } ?: ""), style = MaterialTheme.typography.labelSmall, color = if (goal.status == "active") Forest else Color.Gray)
+                    goal.tasks.forEach { task ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { if (task.status != "completed" && task.status != "cancelled") onTaskStatus(task, if (task.status == "pending") "in_progress" else "completed") }, enabled = task.status != "completed" && task.status != "cancelled", contentPadding = PaddingValues(horizontal = 4.dp)) { Text(if (task.status == "completed") "✓" else "○", color = if (task.status == "completed") Forest else Color.Gray) }
+                            Column(Modifier.weight(1f)) {
+                                Text(task.title, style = MaterialTheme.typography.bodyMedium, color = if (task.status == "completed") Color.Gray else Ink)
+                                Text(taskStatusLabel(task.status), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (goal.status == "active") {
+                            OutlinedButton(onClick = { onGoalStatus(goal, "paused") }) { Text("暂停") }
+                            Button(onClick = { onGoalStatus(goal, "completed") }) { Text("完成") }
+                        } else if (goal.status == "paused") Button(onClick = { onGoalStatus(goal, "active") }) { Text("恢复") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun goalStatusLabel(status: String) = when (status) {
+    "active" -> "推进中"; "paused" -> "已暂停"; "completed" -> "已完成"; "cancelled" -> "已取消"; else -> status
+}
+
+private fun taskStatusLabel(status: String) = when (status) {
+    "pending" -> "待开始"; "in_progress" -> "进行中"; "blocked" -> "受阻"; "completed" -> "已完成"; "cancelled" -> "已取消"; else -> status
 }
 
 @Composable

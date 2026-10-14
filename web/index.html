@@ -13,6 +13,7 @@
       <div class="brand"><span class="brand-mark">乙</span><div><strong>第二大脑</strong><small>LOCAL SECRETARY</small></div></div>
       <nav aria-label="主导航">
         <button class="nav active" data-view="today"><span>◌</span>今日</button>
+        <button class="nav" data-view="goals"><span>◎</span>目标</button>
         <button class="nav" data-view="chat"><span>↗</span>对话</button>
         <button class="nav" data-view="memory"><span>⌘</span>记忆</button>
         <button class="nav" data-view="inbox"><span>↓</span>收件箱</button>
@@ -37,6 +38,20 @@
           <article><span class="number">03</span><h4>人际与项目</h4><p>重要日期、承诺和项目下一步会在这里出现。</p></article>
         </div>
         <div id="report-output" class="report-output message-copy hidden"></div>
+      </section>
+
+      <section id="goals" class="view goals-view">
+        <div class="goals-heading">
+          <div><p class="card-label">持续推进</p><h2>目标与下一步</h2><p class="muted">目标、任务和每一次状态改变都只保存在此设备，并可在活动记录中追溯。</p></div>
+          <button id="show-goal-form" class="primary" type="button">新建目标 <span>＋</span></button>
+        </div>
+        <form id="goal-form" class="goal-form hidden">
+          <label>目标名称<input id="goal-title" maxlength="200" required placeholder="例如：准备十二月旅行"></label>
+          <label>截止日期（可选）<input id="goal-due-at" type="date"></label>
+          <label class="goal-form-notes">说明（可选）<textarea id="goal-description" maxlength="4000" rows="2" placeholder="你想达成什么，或有哪些边界？"></textarea></label>
+          <div><button class="primary" type="submit">保存目标</button><button id="cancel-goal-form" class="secondary" type="button">取消</button></div>
+        </form>
+        <div id="goals-list" class="goals-list"><p class="muted">正在读取目标…</p></div>
       </section>
 
       <section id="chat" class="view split-view">

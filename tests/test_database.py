@@ -79,3 +79,17 @@ class DatabaseMigrationTests(TestCase):
             with sqlite3.connect(path) as db:
                 tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             self.assertEqual(tables, [])
+
+    def test_existing_managed_schema_is_backed_up_before_upgrade(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "data.db"
+            Database(path)
+            with sqlite3.connect(path) as db:
+                db.execute("PRAGMA user_version=10")
+
+            Database(path)
+
+            backups = list(Path(directory).glob("data.pre-v10-*.bak"))
+            self.assertEqual(len(backups), 1)
+            with sqlite3.connect(backups[0]) as backup:
+                self.assertEqual(backup.execute("PRAGMA user_version").fetchone()[0], 10)
