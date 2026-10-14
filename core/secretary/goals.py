@@ -141,8 +141,9 @@ class GoalService:
         )
 
     def create_task(self, goal_id: int, title: str, description: str = "", due_at: Optional[str] = None,
-                    position: Optional[int] = None, idempotency_key: Optional[str] = None) -> dict[str, Any]:
+                    position: Optional[int] = None, idempotency_key: Optional[str] = None, schedule: str = "manual", next_run_at: Optional[str] = None, max_retries: int = 3, interval_minutes: int = 0) -> dict[str, Any]:
         title = self._clean_title(title, "任务标题")
+        self._validate_schedule(schedule, next_run_at, max_retries, interval_minutes)
         key = (idempotency_key or "").strip() or None
         with self.database.connect() as db:
             if not db.execute("SELECT 1 FROM goals WHERE id=?", (goal_id,)).fetchone():
@@ -155,15 +156,15 @@ class GoalService:
                 position = int(db.execute("SELECT COALESCE(MAX(position),0)+1 FROM tasks WHERE goal_id=?", (goal_id,)).fetchone()[0])
             now = self._now()
             cursor = db.execute(
-                "INSERT INTO tasks(goal_id,title,description,status,due_at,position,created_at,updated_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)",
-                (goal_id, title, description.strip(), "pending", due_at, position, now, now, key),
+                "INSERT INTO tasks(goal_id,title,description,status,due_at,position,created_at,updated_at,idempotency_key,schedule,next_run_at,max_retries,interval_minutes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (goal_id, title, description.strip(), "pending", due_at, position, now, now, key, schedule, next_run_at, max_retries, interval_minutes),
             )
             task_id = int(cursor.lastrowid)
             self._event(db, goal_id, task_id, "task.created", {"title": title, "due_at": due_at, "position": position})
             return self._row(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
     def update_task(self, task_id: int, fields: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"title", "description", "due_at", "position"}
+        allowed = {"title", "description", "due_at", "position", "schedule", "next_run_at", "max_retries", "interval_minutes"}
         changed = {key: value for key, value in fields.items() if key in allowed}
         if "title" in changed:
             changed["title"] = self._clean_title(str(changed["title"]), "任务标题")
@@ -177,12 +178,26 @@ class GoalService:
             current = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             if not current:
                 raise KeyError("任务不存在")
+            self._validate_schedule(changed.get("schedule", current["schedule"]), changed.get("next_run_at", current["next_run_at"]), changed.get("max_retries", current["max_retries"]), changed.get("interval_minutes", current["interval_minutes"]))
             if not changed:
                 return self._row(current)
             assignments = ",".join(f"{key}=?" for key in changed)
             db.execute(f"UPDATE tasks SET {assignments},updated_at=? WHERE id=?", (*changed.values(), self._now(), task_id))
             self._event(db, int(current["goal_id"]), task_id, "task.updated", {"fields": changed})
             return self._row(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
+
+    @staticmethod
+    def _validate_schedule(schedule: Any, next_run_at: Any, max_retries: Any, interval_minutes: Any) -> None:
+        if schedule not in {"manual", "once", "interval"}:
+            raise ValueError("任务计划类型无效")
+        if schedule != "manual" and not str(next_run_at or "").strip():
+            raise ValueError("定时任务必须提供下次运行时间")
+        if not isinstance(max_retries, int) or not 0 <= max_retries <= 10:
+            raise ValueError("最大重试次数必须在 0 到 10 之间")
+        if not isinstance(interval_minutes, int) or not 0 <= interval_minutes <= 525600:
+            raise ValueError("任务间隔必须在 0 到 525600 分钟之间")
+        if schedule == "interval" and interval_minutes < 1:
+            raise ValueError("循环任务的间隔至少为 1 分钟")
 
     def set_task_status(self, task_id: int, status: str) -> dict[str, Any]:
         if status not in TASK_STATUSES:

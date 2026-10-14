@@ -12,6 +12,7 @@ from typing import Any, Iterator, Optional
 from zoneinfo import ZoneInfo
 
 from .database import Database
+from .event_hub import EventHub
 from .health import HealthService
 from .memory import MemoryEngine
 from .models import ModelRouter
@@ -42,6 +43,7 @@ class SecretaryService:
         self.notifications = notifications
         self.secret_store = secret_store
         self.web_search = web_search
+        self.events = EventHub(database)
         self._memory_write_lock = threading.RLock()
 
     def initialize(self) -> None:
@@ -843,17 +845,19 @@ class SecretaryService:
 
     def ingest_sms(self, text: str, sender: str = "") -> dict:
         event = parse_sms(text, sender)
-        self._apply_event(event, "短信")
-        self.database.add_event("sms", event.kind, event.to_dict())
-        return event.to_dict()
+        receipt = self.events.publish("sms", event.kind, event.to_dict())
+        if not receipt["duplicate"]:
+            self._apply_event(event, "短信")
+        return {**event.to_dict(), "duplicate": receipt["duplicate"]}
 
     def ingest_notification(self, package: str, title: str, text: str) -> dict:
         if is_noise_notification(package, title, text):
             return {"ignored": True, "reason": "system_service_notification"}
         event = parse_notification(package, title, text)
-        self._apply_event(event, "通知")
-        self.database.add_event("notification", event.kind, event.to_dict())
-        return event.to_dict()
+        receipt = self.events.publish("notification", event.kind, event.to_dict())
+        if not receipt["duplicate"]:
+            self._apply_event(event, "通知")
+        return {**event.to_dict(), "duplicate": receipt["duplicate"]}
 
     def ingest_calendar_events(self, events: list[dict[str, Any]], window_start: str, window_end: str) -> dict[str, int]:
         """Upsert a phone's read-only Calendar Provider instances.

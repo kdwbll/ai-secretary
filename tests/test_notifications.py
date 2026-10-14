@@ -9,6 +9,17 @@ from core.secretary.notifications import NotificationService
 
 
 class NotificationTests(TestCase):
+    def test_same_kind_is_grouped_within_configured_window(self):
+        with TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "data.db")
+            database.set_setting("notifications_enabled", "1")
+            database.set_setting("notification_dedup_minutes", "60")
+            service = NotificationService(database)
+
+            self.assertTrue(service._may_alert("weekly"))
+            service.publish("weekly", "每周整理", "第一条")
+            self.assertFalse(service._may_alert("weekly"))
+
     def test_android_notification_keeps_full_markdown_body(self):
         with TemporaryDirectory() as directory:
             database = Database(Path(directory) / "data.db")
