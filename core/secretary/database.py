@@ -183,6 +183,35 @@ def _add_memory_index(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_memory_candidates_status ON memory_candidates(status,id)")
 
 
+def _add_goal_task_kernel(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS goals ("
+        "id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', "
+        "status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','completed','cancelled')), "
+        "due_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, idempotency_key TEXT UNIQUE)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS tasks ("
+        "id INTEGER PRIMARY KEY, goal_id INTEGER NOT NULL REFERENCES goals(id), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', "
+        "status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','in_progress','blocked','completed','cancelled')), "
+        "due_at TEXT, position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, idempotency_key TEXT, "
+        "UNIQUE(goal_id,idempotency_key))"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS task_runs ("
+        "id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), trigger TEXT NOT NULL, status TEXT NOT NULL, "
+        "idempotency_key TEXT UNIQUE, started_at TEXT NOT NULL, finished_at TEXT, result TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '')"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS task_events ("
+        "id INTEGER PRIMARY KEY, goal_id INTEGER NOT NULL REFERENCES goals(id), task_id INTEGER REFERENCES tasks(id), "
+        "run_id INTEGER REFERENCES task_runs(id), created_at TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}')"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_goal_status ON tasks(goal_id,status,position,id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id,id DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_task_events_goal ON task_events(goal_id,id DESC)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -194,6 +223,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(8, "index collected calendar events", _add_calendar_event_index),
     Migration(9, "remove noisy Android service notifications", _purge_noise_notifications),
     Migration(10, "add incremental memory search and confirmation queue", _add_memory_index),
+    Migration(11, "add goals tasks runs and audit events", _add_goal_task_kernel),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -204,11 +234,20 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(str(self.path)) as db:
             db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys=ON")
             current = int(db.execute("PRAGMA user_version").fetchone()[0])
             if current > LATEST_SCHEMA_VERSION:
                 raise RuntimeError(
                     f"数据库版本 {current} 高于当前程序支持的版本 {LATEST_SCHEMA_VERSION}，请升级程序"
                 )
+            # Keep a recoverable, consistent snapshot before upgrading an
+            # existing schema. Fresh databases and unversioned legacy imports
+            # do not contain a prior managed state worth duplicating.
+            if current and current < LATEST_SCHEMA_VERSION:
+                stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                backup_path = path.with_name(f"{path.stem}.pre-v{current}-{stamp}.bak")
+                with sqlite3.connect(str(backup_path)) as backup:
+                    db.backup(backup)
             db.executescript(SCHEMA)
             self._run_migrations(db)
             defaults = {
@@ -253,6 +292,10 @@ class Database:
             "notifications": {"kind", "title", "body"},
             "memory_documents": {"path", "content", "terms", "summary", "fingerprint"},
             "memory_candidates": {"path", "section", "fact", "source", "reason", "status"},
+            "goals": {"title", "status", "created_at", "updated_at"},
+            "tasks": {"goal_id", "title", "status", "position"},
+            "task_runs": {"task_id", "trigger", "status"},
+            "task_events": {"goal_id", "kind", "payload"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:
@@ -262,6 +305,7 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(str(self.path))
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
         try:
             yield db
             db.commit()

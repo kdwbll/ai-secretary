@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from typing import Optional
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from .auth import AccessControl
 from .connectors import ImapConnector
 from .files import FilePipeline
 from .health import HealthService
+from .goals import GoalService
 from .memory import MemoryDocument, MemoryEngine
 from .models import ModelError, ModelRouter, PROVIDER_TEMPLATES, Route
 from .reports import ReportService
@@ -40,7 +41,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.11.0"
+APP_VERSION = "0.12.0"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -54,6 +55,7 @@ SERVICE = SecretaryService(MEMORY, DB, MODELS, RESOURCE_ROOT / "core" / "prompts
 FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
+GOALS = GoalService(DB)
 
 
 class ChatInput(BaseModel):
@@ -175,6 +177,40 @@ class WebSearchSettingsInput(BaseModel):
 
 class NotificationSettingsInput(BaseModel):
     enabled: bool = False
+
+
+class GoalCreateInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+
+
+class GoalUpdateInput(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+
+
+class GoalStatusInput(BaseModel):
+    status: str
+
+
+class TaskCreateInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+    position: Optional[int] = Field(default=None, ge=0)
+
+
+class TaskUpdateInput(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+    position: Optional[int] = Field(default=None, ge=0)
+
+
+class TaskStatusInput(BaseModel):
+    status: str
 
 
 def upload_limit_bytes() -> int:
@@ -575,6 +611,86 @@ def memory_put(path: str, body: MemoryInput):
 @app.get("/api/search")
 def search(q: str):
     return {"results": MEMORY.search(q)}
+
+
+@app.get("/api/goals")
+def goals(include_closed: bool = True):
+    return {"goals": GOALS.list_goals(include_closed)}
+
+
+@app.post("/api/goals")
+def goal_create(body: GoalCreateInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    try:
+        return GOALS.create_goal(body.title, body.description, body.due_at, x_idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/goals/{goal_id}")
+def goal_get(goal_id: int):
+    try:
+        return GOALS.goal(goal_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.put("/api/goals/{goal_id}")
+def goal_update(goal_id: int, body: GoalUpdateInput):
+    try:
+        return GOALS.update_goal(goal_id, body.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/goals/{goal_id}/status")
+def goal_status(goal_id: int, body: GoalStatusInput):
+    try:
+        return GOALS.set_goal_status(goal_id, body.status)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/goals/{goal_id}/events")
+def goal_events(goal_id: int, limit: int = 100):
+    try:
+        GOALS.goal(goal_id)
+        return {"events": GOALS.events(goal_id, limit)}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/goals/{goal_id}/tasks")
+def task_create(goal_id: int, body: TaskCreateInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    try:
+        return GOALS.create_task(goal_id, body.title, body.description, body.due_at, body.position, x_idempotency_key)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/tasks/{task_id}")
+def task_update(task_id: int, body: TaskUpdateInput):
+    try:
+        return GOALS.update_task(task_id, body.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/tasks/{task_id}/status")
+def task_status(task_id: int, body: TaskStatusInput):
+    try:
+        return GOALS.set_task_status(task_id, body.status)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.get("/api/providers")

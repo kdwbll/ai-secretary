@@ -41,6 +41,8 @@ data class RemoteFile(val hash: String, val name: String, val createdAt: String,
 data class TokenDay(val date: String, val tokens: Long, val cost: Double)
 data class TokenActivity(val totalTokens: Long, val totalCost: Double, val days: List<TokenDay>)
 data class RemoteNotification(val id: Long, val kind: String, val title: String, val body: String)
+data class RemoteTask(val id: Long, val title: String, val status: String, val dueAt: String?)
+data class RemoteGoal(val id: Long, val title: String, val description: String, val status: String, val dueAt: String?, val completedTasks: Int, val taskCount: Int, val tasks: List<RemoteTask>)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -191,6 +193,48 @@ object ApiClient {
                     add(CollectedEvent(item.getLong("id"), item.optString("created_at"), item.optString("source"), item.optString("kind"), payload.optString("title", item.optString("kind")), payload.optString("raw", payload.optString("summary", "暂无内容"))))
                 }
             }
+        }
+    }
+
+    suspend fun goals(server: String, token: String): List<RemoteGoal> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/goals?include_closed=true", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取目标失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("goals")
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    val tasks = item.optJSONArray("tasks")?.let { values -> buildList {
+                        for (taskIndex in 0 until values.length()) {
+                            val task = values.getJSONObject(taskIndex)
+                            add(RemoteTask(task.getLong("id"), task.optString("title"), task.optString("status", "pending"), task.optString("due_at").takeIf { it.isNotBlank() }))
+                        }
+                    } }.orEmpty()
+                    add(RemoteGoal(item.getLong("id"), item.optString("title"), item.optString("description"), item.optString("status", "active"), item.optString("due_at").takeIf { it.isNotBlank() }, item.optInt("completed_task_count"), item.optInt("task_count"), tasks))
+                }
+            }
+        }
+    }
+
+    suspend fun createGoal(server: String, token: String, title: String): RemoteGoal = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("title", title).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/goals", token).header("X-Idempotency-Key", "android-${java.util.UUID.randomUUID()}").post(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("创建目标失败（${response.code}）")
+            val item = JSONObject(response.body?.string().orEmpty())
+            RemoteGoal(item.getLong("id"), item.optString("title"), item.optString("description"), item.optString("status"), item.optString("due_at").takeIf { it.isNotBlank() }, 0, 0, emptyList())
+        }
+    }
+
+    suspend fun setGoalStatus(server: String, token: String, goalId: Long, status: String) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("status", status).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/goals/$goalId/status", token).post(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("更新目标失败（${response.code}）")
+        }
+    }
+
+    suspend fun setTaskStatus(server: String, token: String, taskId: Long, status: String) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("status", status).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/tasks/$taskId/status", token).post(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("更新任务失败（${response.code}）")
         }
     }
 
