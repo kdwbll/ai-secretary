@@ -231,9 +231,10 @@ class ApprovalService:
             revoked_at = None if enabled else now
             db.execute("UPDATE connector_permissions SET enabled=?,revoked_at=?,updated_at=? WHERE connector=?", (int(enabled), revoked_at, now, connector))
             if not enabled:
+                event_source = "file" if connector == "files" else connector
                 db.execute(
                     "UPDATE tasks SET enabled=0,updated_at=? WHERE schedule='event' AND event_source=? AND enabled=1",
-                    (now, connector),
+                    (now, event_source),
                 )
                 pending = db.execute(
                     "SELECT id,goal_id FROM action_approvals WHERE connector=? AND status IN ('pending','approved')", (connector,)

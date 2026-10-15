@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f3f0e8">
   <title>第二大脑 · 本地 AI 助理</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=0.14.0">
+  <link rel="stylesheet" href="/assets/styles.css?v=0.15.0">
+  <link rel="stylesheet" href="/assets/actions.css?v=0.15.0">
 </head>
 <body>
   <div class="shell">
@@ -14,6 +15,7 @@
       <nav aria-label="主导航">
         <button class="nav active" data-view="today"><span>◌</span>今日</button>
         <button class="nav" data-view="goals"><span>◎</span>目标</button>
+        <button class="nav" data-view="actions"><span>△</span>行动与产物</button>
         <button class="nav" data-view="chat"><span>↗</span>对话</button>
         <button class="nav" data-view="memory"><span>⌘</span>记忆</button>
         <button class="nav" data-view="inbox"><span>↓</span>收件箱</button>
@@ -44,7 +46,7 @@
       <section id="goals" class="view goals-view">
         <div class="goals-heading">
           <div><p class="card-label">持续推进</p><h2>目标与下一步</h2><p class="muted">目标、任务和每一次状态改变都只保存在此设备，并可在活动记录中追溯。</p></div>
-          <button id="show-goal-form" class="primary" type="button">新建目标 <span>＋</span></button>
+          <div class="goal-heading-actions"><button id="open-goal-artifacts" class="secondary" type="button">查看 Artifact</button><button id="show-goal-form" class="primary" type="button">新建目标 <span>＋</span></button></div>
         </div>
         <form id="goal-form" class="goal-form hidden">
           <label>目标名称<input id="goal-title" maxlength="200" required placeholder="例如：准备十二月旅行"></label>
@@ -52,7 +54,19 @@
           <label class="goal-form-notes">说明（可选）<textarea id="goal-description" maxlength="4000" rows="2" placeholder="你想达成什么，或有哪些边界？"></textarea></label>
           <div><button class="primary" type="submit">保存目标</button><button id="cancel-goal-form" class="secondary" type="button">取消</button></div>
         </form>
+        <div id="goal-templates" class="goal-templates"><p class="muted">正在读取目标模板…</p></div>
         <div id="goals-list" class="goals-list"><p class="muted">正在读取目标…</p></div>
+      </section>
+
+      <section id="actions" class="view action-workspace">
+        <div class="safety-heading"><div><p class="card-label">先看清，再行动</p><h2>行动与产物</h2><p class="muted">日程创建会先生成审批卡；邮件只保存为本机草稿，不会发送。产物保留每一版并保护你的手动编辑。</p></div><button id="refresh-actions" class="secondary">刷新</button></div>
+        <div class="action-columns">
+          <article class="action-panel"><p class="card-label">日程建议</p><h3>创建本机日程</h3><form id="calendar-suggestion-form"><label>标题<input id="calendar-title" required maxlength="500"></label><div class="coordinate-row"><label>开始<input id="calendar-start" type="datetime-local" required></label><label>结束<input id="calendar-end" type="datetime-local" required></label></div><label>地点<input id="calendar-location" maxlength="1000"></label><label>备注<textarea id="calendar-notes" rows="3" maxlength="4000"></textarea></label><button class="primary">检查冲突并申请</button></form><div id="local-calendar-list" class="compact-list"></div></article>
+          <article class="action-panel"><p class="card-label">邮件草稿</p><h3>只在本机编辑</h3><form id="email-draft-form"><label>收件人<input id="draft-recipients" required placeholder="多个地址用逗号分隔"></label><label>主题<input id="draft-subject" maxlength="500"></label><label>正文<textarea id="draft-body" rows="6" maxlength="50000"></textarea></label><button class="primary">保存草稿</button></form><div id="email-draft-list" class="compact-list"></div></article>
+        </div>
+        <div class="section-head"><div><span class="rule"></span><h3>Artifact 工作台</h3></div></div>
+        <form id="artifact-form" class="artifact-form"><select id="artifact-kind"><option value="plan">计划</option><option value="checklist">清单</option><option value="timeline">时间表</option><option value="budget">预算看板</option></select><select id="artifact-goal"><option value="">不关联目标</option></select><input id="artifact-title" required maxlength="300" placeholder="产物标题"><input id="artifact-source" maxlength="1000" placeholder="来源，例如：对话 #12"><textarea id="artifact-content" required rows="6" maxlength="500000" placeholder="写下可持续更新的内容…"></textarea><button class="primary">创建 Artifact</button></form>
+        <div id="artifact-list" class="artifact-grid"><p class="muted">正在读取产物…</p></div>
       </section>
 
       <section id="chat" class="view split-view">
@@ -153,7 +167,8 @@
   </div>
   <dialog id="interview-dialog"><button class="dialog-close" aria-label="关闭">×</button><p class="card-label" id="interview-domain">冷启动采访</p><div class="progress"><i></i></div><h2 id="interview-question">加载中…</h2><textarea id="interview-answer" rows="4" placeholder="可以跳过，也可以只说最重要的部分"></textarea><div class="dialog-actions"><button id="skip-question" class="text-button">跳过</button><button id="next-question" class="primary">下一题 →</button></div></dialog>
   <dialog id="history-dialog" class="history-dialog"><button id="history-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">聊天记录</p><h2>最近的对话</h2><div class="search-wrap history-search"><input id="history-search" placeholder="搜索标题或对话内容…"><button id="history-search-button">⌕</button></div><p class="muted">可以只删除对话；勾选后会同时清理这条对话新写入的日志和事实，不影响其他对话。</p><div id="chat-history" class="chat-history"></div></dialog>
+  <dialog id="artifact-dialog" class="artifact-dialog"><button id="artifact-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">Artifact 编辑器</p><h2 id="artifact-dialog-title">产物</h2><p id="artifact-meta" class="muted"></p><textarea id="artifact-editor" rows="16"></textarea><div class="dialog-actions"><button id="artifact-preview" class="secondary">安全预览</button><button id="artifact-export" class="secondary">导出</button><button id="artifact-delete" class="danger-button">删除</button><button id="artifact-save" class="primary">保存新版本</button></div></dialog>
   <div id="toast" role="status"></div>
-  <script src="/assets/app.js?v=0.14.0"></script>
+  <script src="/assets/app.js?v=0.15.0"></script>
 </body>
 </html>

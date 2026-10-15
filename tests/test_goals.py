@@ -11,6 +11,17 @@ import core.secretary.app as app_module
 
 
 class GoalServiceTests(TestCase):
+    def test_all_templates_create_idempotent_goals_with_active_schedules(self):
+        with TemporaryDirectory() as directory:
+            service = GoalService(Database(Path(directory) / "templates.db"))
+            template_ids = {item["id"] for item in service.templates()}
+            self.assertEqual(template_ids, {"health_followup", "exam_study", "travel_preparation", "bill_subscription"})
+            for template_id in template_ids:
+                goal = service.create_from_template(template_id, idempotency_key=f"template-{template_id}")
+                self.assertTrue(any(task["schedule"] != "manual" for task in goal["tasks"]))
+                duplicate = service.create_from_template(template_id, idempotency_key=f"template-{template_id}")
+                self.assertEqual(duplicate["id"], goal["id"])
+
     def test_goal_task_lifecycle_is_idempotent_and_audited(self):
         with TemporaryDirectory() as directory:
             service = GoalService(Database(Path(directory) / "goals.db"))

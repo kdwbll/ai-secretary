@@ -303,6 +303,40 @@ def _add_action_safety(db: sqlite3.Connection) -> None:
     )
 
 
+def _add_useful_actions_and_artifacts(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS local_calendar_events ("
+        "id INTEGER PRIMARY KEY, goal_id INTEGER REFERENCES goals(id), title TEXT NOT NULL, "
+        "start_at TEXT NOT NULL, end_at TEXT NOT NULL, all_day INTEGER NOT NULL DEFAULT 0, "
+        "location TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'user', "
+        "approval_id INTEGER UNIQUE REFERENCES action_approvals(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_local_calendar_time ON local_calendar_events(start_at,end_at)")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS email_drafts ("
+        "id INTEGER PRIMARY KEY, goal_id INTEGER REFERENCES goals(id), account_id INTEGER REFERENCES email_accounts(id), "
+        "recipients TEXT NOT NULL DEFAULT '[]', cc TEXT NOT NULL DEFAULT '[]', subject TEXT NOT NULL DEFAULT '', "
+        "body TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', status TEXT NOT NULL DEFAULT 'draft', "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS artifacts ("
+        "id INTEGER PRIMARY KEY, goal_id INTEGER REFERENCES goals(id), chat_id INTEGER REFERENCES chat_messages(id), "
+        "kind TEXT NOT NULL CHECK(kind IN ('plan','checklist','timeline','budget')), title TEXT NOT NULL, "
+        "mime_type TEXT NOT NULL DEFAULT 'text/markdown', source TEXT NOT NULL DEFAULT '', current_version INTEGER NOT NULL DEFAULT 1, "
+        "render_status TEXT NOT NULL DEFAULT 'ready', render_error TEXT NOT NULL DEFAULT '', user_edited INTEGER NOT NULL DEFAULT 0, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS artifact_versions ("
+        "id INTEGER PRIMARY KEY, artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE, "
+        "version INTEGER NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, actor TEXT NOT NULL, "
+        "source TEXT NOT NULL DEFAULT '', UNIQUE(artifact_id,version))"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id,updated_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_artifact_versions ON artifact_versions(artifact_id,version DESC)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -321,6 +355,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(15, "complete event task runner and alert limits", _complete_task_runner),
     Migration(16, "add event subscription watermark", _add_event_watermark),
     Migration(17, "add approvals connector permissions and chained audit", _add_action_safety),
+    Migration(18, "add local calendar drafts templates and artifacts", _add_useful_actions_and_artifacts),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -399,6 +434,10 @@ class Database:
             "action_approvals": {"idempotency_key", "action_type", "level", "connector", "summary", "exact_payload", "status", "expires_at"},
             "connector_permissions": {"connector", "scopes", "mode", "enabled", "last_used_at", "revoked_at"},
             "action_audit": {"event_type", "action_id", "connector", "details", "previous_hash", "event_hash"},
+            "local_calendar_events": {"title", "start_at", "end_at", "approval_id", "created_at"},
+            "email_drafts": {"recipients", "subject", "body", "status", "updated_at"},
+            "artifacts": {"kind", "title", "mime_type", "source", "current_version", "render_status", "user_edited"},
+            "artifact_versions": {"artifact_id", "version", "content", "actor", "source"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:

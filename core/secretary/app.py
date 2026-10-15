@@ -13,7 +13,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,8 @@ from .secrets import SecretStore
 from .web_search import WebSearchService
 from .runtime import ServiceRuntime
 from .safety import ApprovalError, ApprovalService
+from .actions import UsefulActionService
+from .artifacts import ArtifactConflict, ArtifactService, safe_file_preview
 
 # ROOT is deliberately user-writable state (database, memory, uploads).  In a
 # frozen desktop build the code and static assets live in PyInstaller's
@@ -44,7 +46,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.0"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -62,6 +64,8 @@ GOALS = GoalService(DB)
 RUNNER = TaskRunner(DB, NOTIFICATIONS)
 EVENTS = EventHub(DB)
 SAFETY = ApprovalService(DB)
+ACTIONS = UsefulActionService(DB, SAFETY)
+ARTIFACTS = ArtifactService(DB)
 
 
 class ChatInput(BaseModel):
@@ -273,6 +277,56 @@ class ForgetInput(BaseModel):
     phrase: str = Field(min_length=1, max_length=500)
     goal_ids: list[int] = Field(default_factory=list, max_length=100)
     expires_minutes: int = Field(default=15, ge=1, le=1440)
+
+
+class TemplateCreateInput(BaseModel):
+    title: str = Field(default="", max_length=200)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+
+
+class CalendarSuggestionInput(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    start_at: str = Field(min_length=1, max_length=64)
+    end_at: str = Field(min_length=1, max_length=64)
+    all_day: bool = False
+    location: str = Field(default="", max_length=1000)
+    notes: str = Field(default="", max_length=4000)
+    goal_id: Optional[int] = None
+
+
+class EmailDraftCreateInput(BaseModel):
+    recipients: list[str] = Field(min_length=1, max_length=50)
+    cc: list[str] = Field(default_factory=list, max_length=50)
+    subject: str = Field(default="", max_length=500)
+    body: str = Field(default="", max_length=50000)
+    goal_id: Optional[int] = None
+    account_id: Optional[int] = None
+    source: str = Field(default="manual", max_length=200)
+
+
+class EmailDraftUpdateInput(BaseModel):
+    recipients: Optional[list[str]] = Field(default=None, max_length=50)
+    cc: Optional[list[str]] = Field(default=None, max_length=50)
+    subject: Optional[str] = Field(default=None, max_length=500)
+    body: Optional[str] = Field(default=None, max_length=50000)
+
+
+class ArtifactCreateInput(BaseModel):
+    kind: str = Field(pattern="^(plan|checklist|timeline|budget)$")
+    title: str = Field(min_length=1, max_length=300)
+    content: str = Field(min_length=1, max_length=500000)
+    mime_type: str = Field(default="text/markdown", max_length=120)
+    source: str = Field(default="", max_length=1000)
+    goal_id: Optional[int] = None
+    chat_id: Optional[int] = None
+
+
+class ArtifactUpdateInput(BaseModel):
+    content: str = Field(min_length=1, max_length=500000)
+    base_version: int = Field(ge=1)
+    actor: str = Field(default="user", pattern="^(user|assistant)$")
+    source: str = Field(default="manual edit", max_length=1000)
+    confirm_overwrite: bool = False
 
 
 def upload_limit_bytes() -> int:
@@ -695,6 +749,21 @@ def goal_create(body: GoalCreateInput, x_idempotency_key: Optional[str] = Header
         raise HTTPException(400, str(exc))
 
 
+@app.get("/api/goal-templates")
+def goal_templates():
+    return {"templates": GOALS.templates()}
+
+
+@app.post("/api/goal-templates/{template_id}")
+def goal_template_create(template_id: str, body: TemplateCreateInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    try:
+        return GOALS.create_from_template(template_id, title=body.title, due_at=body.due_at, idempotency_key=x_idempotency_key)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get("/api/goals/{goal_id}")
 def goal_get(goal_id: int):
     try:
@@ -790,6 +859,126 @@ def task_run_pause(run_id: int):
 @app.get("/api/activity")
 def task_activity(goal_id: Optional[int] = None, limit: int = 100):
     return {"activity": RUNNER.activity(goal_id, limit)}
+
+
+@app.get("/api/calendar/local")
+def local_calendar_events():
+    return {"events": ACTIONS.calendar_events()}
+
+
+@app.get("/api/calendar/conflicts")
+def calendar_conflicts(start_at: str, end_at: str):
+    try:
+        return {"conflicts": ACTIONS.calendar_conflicts(start_at, end_at)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/calendar/suggestions")
+def calendar_suggestion(body: CalendarSuggestionInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    try:
+        return ACTIONS.suggest_calendar(body.model_dump(exclude={"goal_id"}), goal_id=body.goal_id, idempotency_key=x_idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/calendar/suggestions/{approval_id}/execute")
+def calendar_suggestion_execute(approval_id: int):
+    try:
+        return ACTIONS.execute_calendar(approval_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ApprovalError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/email/drafts")
+def email_drafts():
+    return {"drafts": ACTIONS.drafts()}
+
+
+@app.post("/api/email/drafts")
+def email_draft_create(body: EmailDraftCreateInput):
+    try:
+        return ACTIONS.create_draft(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/email/drafts/{draft_id}")
+def email_draft_update(draft_id: int, body: EmailDraftUpdateInput):
+    try:
+        return ACTIONS.update_draft(draft_id, body.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.delete("/api/email/drafts/{draft_id}")
+def email_draft_delete(draft_id: int):
+    try:
+        ACTIONS.delete_draft(draft_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/artifacts")
+def artifact_list(goal_id: Optional[int] = None):
+    return {"artifacts": ARTIFACTS.list(goal_id)}
+
+
+@app.post("/api/artifacts")
+def artifact_create(body: ArtifactCreateInput):
+    try:
+        return ARTIFACTS.create(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/artifacts/{artifact_id}")
+def artifact_get(artifact_id: int):
+    try:
+        return ARTIFACTS.get(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.put("/api/artifacts/{artifact_id}")
+def artifact_update(artifact_id: int, body: ArtifactUpdateInput):
+    try:
+        return ARTIFACTS.update(artifact_id, **body.model_dump())
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ArtifactConflict as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.delete("/api/artifacts/{artifact_id}")
+def artifact_delete(artifact_id: int):
+    try:
+        ARTIFACTS.delete(artifact_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/artifacts/{artifact_id}/preview", response_class=HTMLResponse)
+def artifact_preview(artifact_id: int):
+    try:
+        return HTMLResponse(ARTIFACTS.render_html(artifact_id), headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/artifacts/{artifact_id}/export")
+def artifact_export(artifact_id: int, format: str = "md"):
+    try:
+        content, media_type, filename = ARTIFACTS.export(artifact_id, format)
+        return Response(content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.get("/api/approvals")
@@ -1207,6 +1396,10 @@ async def health_import(file: UploadFile = File(...)):
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
+    try:
+        SAFETY.require("read", connector="files")
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     suffix = Path(file.filename or "upload").suffix
     temp_path = await save_upload_to_temp(file, suffix)
     try:
@@ -1239,6 +1432,17 @@ def file_content(digest: str):
         raise HTTPException(404, "归档原件不存在")
     media_type = mimetypes.guess_type(rows[0]["original_name"])[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/api/files/{digest}/preview", response_class=HTMLResponse)
+def file_preview(digest: str):
+    rows = DB.rows("SELECT original_name,extracted_text FROM files WHERE hash=?", (digest,))
+    if not rows:
+        raise HTTPException(404, "文件不存在")
+    return HTMLResponse(
+        safe_file_preview(rows[0]["original_name"], rows[0]["extracted_text"]),
+        headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; frame-src 'none'", "Cache-Control": "private, no-store"},
+    )
 
 
 @app.delete("/api/files/{digest}")
