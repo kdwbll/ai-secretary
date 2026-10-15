@@ -261,6 +261,48 @@ def _add_event_watermark(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE tasks ADD COLUMN event_after_id INTEGER NOT NULL DEFAULT 0")
 
 
+def _add_action_safety(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS action_approvals ("
+        "id INTEGER PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, action_type TEXT NOT NULL, "
+        "level TEXT NOT NULL CHECK(level IN ('read','draft','write','irreversible')), "
+        "connector TEXT NOT NULL DEFAULT '', goal_id INTEGER REFERENCES goals(id), "
+        "summary TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', exact_payload TEXT NOT NULL DEFAULT '{}', "
+        "status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied','expired','revoked','executing','executed','failed')), "
+        "created_at TEXT NOT NULL, expires_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT, "
+        "executed_at TEXT, result TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '')"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS connector_permissions ("
+        "connector TEXT PRIMARY KEY, display_name TEXT NOT NULL, scopes TEXT NOT NULL DEFAULT '[]', "
+        "mode TEXT NOT NULL DEFAULT 'read' CHECK(mode IN ('read','draft','write')), "
+        "enabled INTEGER NOT NULL DEFAULT 1, last_used_at TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS action_audit ("
+        "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, event_type TEXT NOT NULL, "
+        "action_id INTEGER REFERENCES action_approvals(id), goal_id INTEGER REFERENCES goals(id), "
+        "connector TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}', "
+        "previous_hash TEXT NOT NULL DEFAULT '', event_hash TEXT UNIQUE NOT NULL)"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_action_approvals_status ON action_approvals(status,expires_at,id DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_action_audit_filters ON action_audit(connector,goal_id,created_at,id)")
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    defaults = (
+        ("email", "只读邮箱", '["messages.read","attachments.read"]'),
+        ("calendar", "Android 日历", '["events.read"]'),
+        ("sms", "Android 短信", '["messages.read"]'),
+        ("notification", "Android 通知", '["notifications.read"]'),
+        ("location", "设备位置", '["location.read"]'),
+        ("health", "健康数据", '["health.read"]'),
+        ("files", "本机文件", '["files.read","files.import"]'),
+    )
+    db.executemany(
+        "INSERT OR IGNORE INTO connector_permissions(connector,display_name,scopes,mode,updated_at) VALUES(?,?,?,'read',?)",
+        [(connector, name, scopes, now) for connector, name, scopes in defaults],
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -278,6 +320,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(14, "add recurring task interval", _add_task_interval),
     Migration(15, "complete event task runner and alert limits", _complete_task_runner),
     Migration(16, "add event subscription watermark", _add_event_watermark),
+    Migration(17, "add approvals connector permissions and chained audit", _add_action_safety),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -353,6 +396,9 @@ class Database:
             "task_events": {"goal_id", "kind", "payload"},
             "event_receipts": {"fingerprint", "event_id", "created_at"},
             "notifications": {"kind", "title", "body", "reason_key", "alerted"},
+            "action_approvals": {"idempotency_key", "action_type", "level", "connector", "summary", "exact_payload", "status", "expires_at"},
+            "connector_permissions": {"connector", "scopes", "mode", "enabled", "last_used_at", "revoked_at"},
+            "action_audit": {"event_type", "action_id", "connector", "details", "previous_hash", "event_hash"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:

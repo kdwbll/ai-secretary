@@ -6,7 +6,7 @@ import os
 import sys
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
@@ -34,6 +34,7 @@ from .storage import LocalStorage
 from .secrets import SecretStore
 from .web_search import WebSearchService
 from .runtime import ServiceRuntime
+from .safety import ApprovalError, ApprovalService
 
 # ROOT is deliberately user-writable state (database, memory, uploads).  In a
 # frozen desktop build the code and static assets live in PyInstaller's
@@ -43,7 +44,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.13.1"
+APP_VERSION = "0.14.0"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -60,6 +61,7 @@ HEALTH = HealthService(DB, MEMORY)
 GOALS = GoalService(DB)
 RUNNER = TaskRunner(DB, NOTIFICATIONS)
 EVENTS = EventHub(DB)
+SAFETY = ApprovalService(DB)
 
 
 class ChatInput(BaseModel):
@@ -247,6 +249,32 @@ class TaskRunFinishInput(BaseModel):
     error: str = Field(default="", max_length=2000)
 
 
+class ApprovalCreateInput(BaseModel):
+    action_type: str = Field(min_length=1, max_length=120)
+    level: str = Field(pattern="^(read|draft|write|irreversible)$")
+    connector: str = Field(default="", max_length=80)
+    goal_id: Optional[int] = None
+    summary: str = Field(min_length=1, max_length=500)
+    target: str = Field(default="", max_length=500)
+    exact_payload: dict = Field(default_factory=dict)
+    expires_minutes: int = Field(default=30, ge=1, le=1440)
+
+
+class ApprovalDecisionInput(BaseModel):
+    decision: str = Field(pattern="^(approve|deny|revoke)$")
+    edited_payload: Optional[dict] = None
+
+
+class ConnectorPermissionInput(BaseModel):
+    enabled: bool
+
+
+class ForgetInput(BaseModel):
+    phrase: str = Field(min_length=1, max_length=500)
+    goal_ids: list[int] = Field(default_factory=list, max_length=100)
+    expires_minutes: int = Field(default=15, ge=1, le=1440)
+
+
 def upload_limit_bytes() -> int:
     try:
         megabytes = int(DB.setting("max_upload_mb", "200") or 200)
@@ -279,6 +307,10 @@ async def save_upload_to_temp(file: UploadFile, suffix: str, limit_bytes: Option
 
 
 def sync_email_accounts(refresh: bool = False) -> dict:
+    try:
+        SAFETY.require("read", connector="email")
+    except ApprovalError as exc:
+        return {"accounts": [], "messages": 0, "attachments": 0, "disabled": True, "error": str(exc)}
     accounts = DB.rows("SELECT * FROM email_accounts WHERE enabled=1 ORDER BY id")
     result = {"accounts": [], "messages": 0, "attachments": 0}
     for account in accounts:
@@ -760,6 +792,106 @@ def task_activity(goal_id: Optional[int] = None, limit: int = 100):
     return {"activity": RUNNER.activity(goal_id, limit)}
 
 
+@app.get("/api/approvals")
+def approval_list(status: str = "", limit: int = 100):
+    return {"approvals": SAFETY.list(status, limit)}
+
+
+@app.post("/api/approvals")
+def approval_create(body: ApprovalCreateInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    try:
+        return SAFETY.request(
+            body.action_type, body.level, body.summary, connector=body.connector,
+            goal_id=body.goal_id, target=body.target, exact_payload=body.exact_payload,
+            expires_minutes=body.expires_minutes, idempotency_key=x_idempotency_key,
+        )
+    except ApprovalError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/approvals/{approval_id}/decision")
+def approval_decide(approval_id: int, body: ApprovalDecisionInput):
+    try:
+        return SAFETY.decide(approval_id, body.decision, edited_payload=body.edited_payload)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ApprovalError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/connectors/permissions")
+def connector_permissions():
+    return {"connectors": SAFETY.connectors()}
+
+
+@app.put("/api/connectors/permissions/{connector}")
+def connector_permission_update(connector: str, body: ConnectorPermissionInput):
+    try:
+        return SAFETY.set_connector(connector, body.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/audit")
+def action_audit(goal_id: Optional[int] = None, connector: str = "", date_from: str = "", date_to: str = "", limit: int = 200):
+    return {
+        "audit": SAFETY.audit(goal_id=goal_id, connector=connector, date_from=date_from, date_to=date_to, limit=limit),
+        "integrity": SAFETY.verify_audit_chain(),
+    }
+
+
+@app.get("/api/audit/export")
+def action_audit_export(goal_id: Optional[int] = None, connector: str = "", date_from: str = "", date_to: str = ""):
+    payload = {
+        "version": APP_VERSION,
+        "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "integrity": SAFETY.verify_audit_chain(),
+        "audit": SAFETY.audit(goal_id=goal_id, connector=connector, date_from=date_from, date_to=date_to, limit=1000),
+    }
+    return JSONResponse(payload, headers={"Content-Disposition": 'attachment; filename="second-brain-audit.json"'})
+
+
+@app.post("/api/forget")
+def forget_request(body: ForgetInput, x_idempotency_key: Optional[str] = Header(default=None)):
+    return SAFETY.request(
+        "data.forget", "irreversible", f"忘掉与“{body.phrase}”有关的数据",
+        connector="", target="本机记忆、未来任务与派生索引",
+        exact_payload={"phrase": body.phrase, "goal_ids": body.goal_ids},
+        expires_minutes=body.expires_minutes, idempotency_key=x_idempotency_key,
+    )
+
+
+@app.post("/api/forget/{approval_id}/execute")
+def forget_execute(approval_id: int):
+    try:
+        approval = SAFETY.claim(approval_id, action_type="data.forget", connector="", actor="forget-service")
+        payload = approval["exact_payload"]
+        changed = MEMORY.forget(str(payload.get("phrase") or ""))
+        goal_ids = [int(value) for value in payload.get("goal_ids", [])]
+        cancelled = 0
+        if goal_ids:
+            placeholders = ",".join("?" for _ in goal_ids)
+            with DB.connect() as db:
+                cursor = db.execute(
+                    f"UPDATE tasks SET enabled=0,status='cancelled',updated_at=datetime('now','localtime') "
+                    f"WHERE goal_id IN ({placeholders}) AND status IN ('pending','in_progress','blocked')", tuple(goal_ids),
+                )
+                cancelled = cursor.rowcount
+        result = {"removed_memory_lines": changed, "cancelled_future_tasks": cancelled}
+        SAFETY.finish(approval_id, success=True, result=result, actor="forget-service")
+        return result
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ApprovalError as exc:
+        raise HTTPException(409, str(exc))
+    except Exception as exc:
+        try:
+            SAFETY.finish(approval_id, success=False, error=str(exc), actor="forget-service")
+        except Exception:
+            pass
+        raise HTTPException(500, f"遗忘操作失败：{exc}")
+
+
 @app.get("/api/providers")
 def providers():
     return {"templates": PROVIDER_TEMPLATES, "providers": MODELS.providers(), "routes": DB.rows("SELECT * FROM model_routes ORDER BY task")}
@@ -997,26 +1129,42 @@ def usage_activity(days: int = 365):
 
 @app.post("/api/ingest/sms")
 def ingest_sms(body: SmsInput):
+    try:
+        SAFETY.require("read", connector="sms")
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     return SERVICE.ingest_sms(body.text, body.sender)
 
 
 @app.post("/api/ingest/notification")
 def ingest_notification(body: NotificationInput):
+    try:
+        SAFETY.require("read", connector="notification")
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     return SERVICE.ingest_notification(body.package, body.title, body.text)
 
 
 @app.post("/api/ingest/calendar")
 def ingest_calendar(body: CalendarSyncInput):
     try:
+        SAFETY.require("read", connector="calendar")
         return SERVICE.ingest_calendar_events(
             [item.model_dump() for item in body.events], body.window_start, body.window_end
         )
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
 
 @app.post("/api/events")
 def publish_event(body: EventInput):
+    try:
+        if body.source in {"email", "calendar", "sms", "notification", "location", "health", "files"}:
+            SAFETY.require("read", connector=body.source)
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     return EVENTS.publish(body.source, body.kind, body.payload, body.trust)
 
 
@@ -1039,6 +1187,10 @@ def health_summary(days: int = 14):
 
 @app.post("/api/health/import")
 async def health_import(file: UploadFile = File(...)):
+    try:
+        SAFETY.require("read", connector="health")
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
     suffix = Path(file.filename or "health-data").suffix.lower()
     if suffix not in {".zip", ".xml", ".csv", ".json"}:
         raise HTTPException(400, "请选择 Apple 健康 XML/ZIP，或小米运动 CSV/JSON/ZIP")

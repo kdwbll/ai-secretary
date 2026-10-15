@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f3f0e8">
   <title>第二大脑 · 本地 AI 助理</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=guided-choices-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=0.14.0">
 </head>
 <body>
   <div class="shell">
@@ -18,6 +18,7 @@
         <button class="nav" data-view="memory"><span>⌘</span>记忆</button>
         <button class="nav" data-view="inbox"><span>↓</span>收件箱</button>
         <button class="nav" data-view="health"><span>♡</span>健康</button>
+        <button class="nav" data-view="safety"><span>◇</span>审批与安全</button>
         <button class="nav" data-view="settings"><span>⚙</span>设置</button>
       </nav>
       <div class="privacy"><i></i><div><b>仅存于此设备</b><small>Markdown 可读 · 随时带走</small></div></div>
@@ -101,6 +102,34 @@
         <div id="health-import-status" class="connection-status">尚未导入健康数据</div>
       </section>
 
+      <section id="safety" class="view safety-view">
+        <div class="safety-heading">
+          <div><p class="card-label">由你最终决定</p><h2>审批与安全中心</h2><p class="muted">读取和草稿遵循最小权限；任何外部写入或不可逆操作都必须先在这里获得明确批准。</p></div>
+          <button id="refresh-safety" class="secondary" type="button">刷新</button>
+        </div>
+        <div class="safety-summary">
+          <article><strong id="pending-approval-count">0</strong><span>等待你确认</span></article>
+          <article><strong id="connector-count">0</strong><span>已启用连接器</span></article>
+          <article><strong id="audit-integrity">—</strong><span>审计链状态</span></article>
+        </div>
+        <div class="section-head"><div><span class="rule"></span><h3>待审批动作</h3></div></div>
+        <div id="approval-list" class="approval-list"><p class="muted">正在读取审批…</p></div>
+        <div class="section-head"><div><span class="rule"></span><h3>连接器权限</h3></div><small class="muted">撤销只会停止后续读取和任务，不删除已经采集的原始数据。</small></div>
+        <div id="connector-permissions" class="connector-grid"><p class="muted">正在读取权限…</p></div>
+        <div class="section-head audit-head"><div><span class="rule"></span><h3>安全审计</h3></div><button id="export-audit" class="secondary small" type="button">导出 JSON</button></div>
+        <form id="audit-filters" class="audit-filters">
+          <select id="audit-connector"><option value="">全部连接器</option></select>
+          <input id="audit-from" type="date" aria-label="开始日期">
+          <input id="audit-to" type="date" aria-label="结束日期">
+          <button class="secondary small" type="submit">筛选</button>
+        </form>
+        <div id="audit-list" class="audit-list"><p class="muted">正在读取审计记录…</p></div>
+        <article class="forget-card">
+          <div><p class="card-label">不可逆操作</p><h3>完整遗忘</h3><p class="muted">先生成审批卡；再次批准并执行后，才会清理匹配记忆、派生索引以及所选目标的未来任务。</p></div>
+          <form id="forget-form"><input id="forget-phrase" required maxlength="500" placeholder="输入需要忘掉的关键词或内容"><button class="danger-button" type="submit">申请遗忘</button></form>
+        </article>
+      </section>
+
       <section id="settings" class="view">
         <div class="settings-grid">
           <article class="setting-card"><p class="card-label">01 · 供应商</p><h2>添加多个 AI</h2><form id="provider-form"><label>模板<select id="provider-template"><option>OpenAI</option><option>DeepSeek</option><option>通义千问</option><option>Kimi</option><option>智谱</option><option>Gemini</option><option>Ollama</option><option>自定义</option></select></label><label>显示名称<input id="provider-name" value="OpenAI" placeholder="例如 我的 OpenAI"></label><label>接口地址<input id="provider-url" value="https://api.openai.com/v1"></label><label>API Key<input id="provider-key" type="password" autocomplete="off" placeholder="仅在本机加密保存"></label><label>模型列表<input id="provider-model" placeholder="多个模型用逗号分隔"></label><label>单次消耗程度<select id="provider-consumption"><option value="low">小 · 更省额度，回答更短</option><option value="medium" selected>中 · 日常平衡</option><option value="high">大 · 更充分，消耗更多</option></select></label><button class="primary" type="submit">保存供应商</button></form><div id="provider-list" class="provider-list"></div></article>
@@ -125,6 +154,6 @@
   <dialog id="interview-dialog"><button class="dialog-close" aria-label="关闭">×</button><p class="card-label" id="interview-domain">冷启动采访</p><div class="progress"><i></i></div><h2 id="interview-question">加载中…</h2><textarea id="interview-answer" rows="4" placeholder="可以跳过，也可以只说最重要的部分"></textarea><div class="dialog-actions"><button id="skip-question" class="text-button">跳过</button><button id="next-question" class="primary">下一题 →</button></div></dialog>
   <dialog id="history-dialog" class="history-dialog"><button id="history-close" class="dialog-close" aria-label="关闭">×</button><p class="card-label">聊天记录</p><h2>最近的对话</h2><div class="search-wrap history-search"><input id="history-search" placeholder="搜索标题或对话内容…"><button id="history-search-button">⌕</button></div><p class="muted">可以只删除对话；勾选后会同时清理这条对话新写入的日志和事实，不影响其他对话。</p><div id="chat-history" class="chat-history"></div></dialog>
   <div id="toast" role="status"></div>
-  <script src="/assets/app.js?v=0.13.1"></script>
+  <script src="/assets/app.js?v=0.14.0"></script>
 </body>
 </html>
