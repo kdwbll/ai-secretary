@@ -156,6 +156,49 @@ class ChatHistoryTests(TestCase):
             with patch.object(service.memory.storage, "list", side_effect=AssertionError("scan")):
                 service._context("运动")
 
+    def test_workspace_goals_and_artifacts_are_visible_to_every_chat(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            now = "2026-10-15T20:00:00+08:00"
+            with service.database.connect() as db:
+                goal_id = db.execute(
+                    "INSERT INTO goals(title,description,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    ("学习 MuJoCo", "跑通示例", "active", now, now),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO tasks(goal_id,title,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (goal_id, "安装环境", "pending", now, now),
+                )
+                artifact_id = db.execute(
+                    "INSERT INTO artifacts(kind,title,source,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    ("plan", "本周学习计划", "对话 #1", now, now),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO artifact_versions(artifact_id,version,content,actor,source,created_at) VALUES(?,?,?,?,?,?)",
+                    (artifact_id, 1, "周五前跑通官方示例", "assistant", "chat", now),
+                )
+            context = service._context("随便聊聊")
+            self.assertIn("学习 MuJoCo", context)
+            self.assertIn("安装环境", context)
+            self.assertIn("本周学习计划", context)
+
+    def test_workspace_explains_product_artifact_and_reads_its_body(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            now = "2026-10-15T20:00:00+08:00"
+            with service.database.connect() as db:
+                artifact_id = db.execute(
+                    "INSERT INTO artifacts(kind,title,source,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    ("checklist", "搬家清单", "手动创建", now, now),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO artifact_versions(artifact_id,version,content,actor,source,created_at) VALUES(?,?,?,?,?,?)",
+                    (artifact_id, 1, "- [ ] 打包书籍", "user", "manual", now),
+                )
+            context = service._context("我的 artifact 是什么")
+            self.assertIn("可编辑、可预览", context)
+            self.assertIn("打包书籍", context)
+
     def test_health_question_is_not_saved_as_a_health_fact(self):
         with TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))

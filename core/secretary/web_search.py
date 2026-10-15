@@ -84,7 +84,8 @@ class WebSearchService:
             "published": item.get("datePublished"),
             "site": item.get("siteName"),
         } for item in items if isinstance(item, dict)]
-        return SearchOutcome(results=self._normalize(normalized, limit), provider="bocha")
+        normalized_results = self._normalize(normalized, max(limit * 2, limit))
+        return SearchOutcome(results=self._rank(query, normalized_results, limit), provider="bocha")
 
     def _searxng(self, query: str, category: str, limit: int) -> SearchOutcome:
         base = (self.database.setting("searxng_url", "") or "").strip()
@@ -101,7 +102,44 @@ class WebSearchService:
         request = Request(endpoint + "?" + urlencode(params), headers={"Accept": "application/json", "User-Agent": "SecondBrain/0.7.7"})
         with urlopen(request, timeout=8) as response:
             payload = json.loads(response.read(2_000_000).decode("utf-8"))
-        return SearchOutcome(results=self._normalize(payload.get("results") or [], limit), provider="searxng")
+        normalized_results = self._normalize(payload.get("results") or [], max(limit * 2, limit))
+        return SearchOutcome(results=self._rank(query, normalized_results, limit), provider="searxng")
+
+    @staticmethod
+    def _query_terms(query: str) -> set[str]:
+        lowered = query.lower()
+        latin = {word for word in re.findall(r"[a-z0-9][a-z0-9._+-]{1,}", lowered)}
+        chinese_runs = re.findall(r"[\u4e00-\u9fff]{2,}", lowered)
+        stop = {"一下", "帮我", "请问", "什么", "怎么", "如何", "有没有", "现在", "今天", "最新", "搜索", "联网", "网页", "官网", "多少", "价格"}
+        chinese: set[str] = set()
+        for run in chinese_runs:
+            for ignored in stop:
+                run = run.replace(ignored, " ")
+            for part in run.split():
+                if len(part) == 2:
+                    chinese.add(part)
+                elif len(part) > 2:
+                    chinese.update(part[index:index + 2] for index in range(len(part) - 1))
+        return latin | chinese
+
+    @classmethod
+    def _rank(cls, query: str, results: list[dict[str, str]], limit: int) -> list[dict[str, str]]:
+        """Drop obvious search drift and prefer results matching the request."""
+        terms = cls._query_terms(query)
+        if not terms:
+            return results[:limit]
+        ranked: list[tuple[int, int, dict[str, str]]] = []
+        for position, item in enumerate(results):
+            title = item.get("title", "").lower()
+            body = (title + " " + item.get("snippet", "") + " " + item.get("site", "")).lower()
+            matched = {term for term in terms if term in body}
+            if len(matched) < (2 if len(terms) >= 3 else 1):
+                continue
+            title_hits = sum(1 for term in matched if term in title)
+            body_hits = len(matched)
+            score = title_hits * 3 + body_hits
+            ranked.append((score, -position, item))
+        return [item for _, _, item in sorted(ranked, reverse=True)[:limit]]
 
     @staticmethod
     def _normalize(items: list[dict], limit: int) -> list[dict[str, str]]:
