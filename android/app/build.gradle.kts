@@ -1,9 +1,29 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
+val releaseKeystorePath = System.getenv("SECOND_BRAIN_KEYSTORE_PATH")
+val releaseStorePassword = System.getenv("SECOND_BRAIN_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("SECOND_BRAIN_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("SECOND_BRAIN_KEY_PASSWORD")
+val hasReleaseSigning = listOf(releaseKeystorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.secondbrain.app"
     compileSdk = 35
-    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 25; versionName = "0.15.0" }
+    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 26; versionName = "0.15.1" }
+    signingConfigs {
+        if (hasReleaseSigning) create("stableRelease") {
+            storeFile = file(releaseKeystorePath!!)
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("stableRelease")
+            isMinifyEnabled = false
+        }
+    }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
     compileOptions {

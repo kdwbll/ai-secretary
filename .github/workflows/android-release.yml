@@ -17,15 +17,34 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Build installable APK
+      - name: Restore stable Android signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/second-brain-release.jks"
+      - name: Build signed installable APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
+        env:
+          SECOND_BRAIN_KEYSTORE_PATH: ${{ runner.temp }}/second-brain-release.jks
+          SECOND_BRAIN_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SECOND_BRAIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SECOND_BRAIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
       - name: Verify APK output
-        run: test -s android/app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          test -s android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" verify android/app/build/outputs/apk/release/app-release.apk
       - uses: actions/upload-artifact@v4
         with:
           name: SecondBrain-android-${{ github.ref_name }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
       - name: Attach APK to version release
         env:
@@ -33,5 +52,5 @@ jobs:
         run: |
           release_tag="${GITHUB_REF_NAME#android-}"
           gh release view "$release_tag" >/dev/null 2>&1 || gh release create "$release_tag" --title "SecondBrain ${release_tag#v}" --generate-notes
-          cp android/app/build/outputs/apk/debug/app-debug.apk "SecondBrain-android-${release_tag}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "SecondBrain-android-${release_tag}.apk"
           gh release upload "$release_tag" "SecondBrain-android-${release_tag}.apk" --clobber
