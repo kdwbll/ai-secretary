@@ -54,6 +54,9 @@ data class ConnectorPermission(
     val connector: String, val displayName: String, val scopes: List<String>,
     val mode: String, val enabled: Boolean, val lastUsedAt: String,
 )
+data class LocalCalendarEvent(val id: Long, val title: String, val startAt: String, val endAt: String, val location: String)
+data class LocalEmailDraft(val id: Long, val recipients: List<String>, val subject: String, val body: String, val updatedAt: String)
+data class RemoteArtifact(val id: Long, val kind: String, val title: String, val preview: String, val version: Int, val source: String, val updatedAt: String)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -264,6 +267,50 @@ object ApiClient {
                 val item = array.getJSONObject(index)
                 add(TaskActivity(item.getLong("id"), item.getLong("task_id"), item.optString("task_title"), item.optString("goal_title"), item.optString("status"), item.optString("trigger"), item.optString("started_at"), item.optString("next_run_at").takeIf { it.isNotBlank() }, item.optString("error")))
             } }
+        }
+    }
+
+    suspend fun localCalendar(server: String, token: String): List<LocalCalendarEvent> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/calendar/local", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取本机日程失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("events")
+            buildList { for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(LocalCalendarEvent(item.getLong("id"), item.optString("title"), item.optString("start_at"), item.optString("end_at"), item.optString("location")))
+            } }
+        }
+    }
+
+    suspend fun emailDrafts(server: String, token: String): List<LocalEmailDraft> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/email/drafts", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取邮件草稿失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("drafts")
+            buildList { for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                val recipients = item.optJSONArray("recipients")?.let { values -> buildList {
+                    for (recipientIndex in 0 until values.length()) add(values.optString(recipientIndex))
+                } }.orEmpty()
+                add(LocalEmailDraft(item.getLong("id"), recipients, item.optString("subject"), item.optString("body"), item.optString("updated_at")))
+            } }
+        }
+    }
+
+    suspend fun artifacts(server: String, token: String): List<RemoteArtifact> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/artifacts", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取 Artifact 失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("artifacts")
+            buildList { for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(RemoteArtifact(item.getLong("id"), item.optString("kind"), item.optString("title"), item.optString("preview"), item.optInt("current_version", 1), item.optString("source"), item.optString("updated_at")))
+            } }
+        }
+    }
+
+    suspend fun executeCalendarApproval(server: String, token: String, approvalId: Long) = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/calendar/suggestions/$approvalId/execute", token)
+            .post("{}".toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            val content = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error(runCatching { JSONObject(content).optString("detail") }.getOrNull().orEmpty().ifBlank { "创建本机日程失败（${response.code}）" })
         }
     }
 

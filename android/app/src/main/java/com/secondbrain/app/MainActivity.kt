@@ -113,6 +113,9 @@ fun SecondBrainApp(intent: Intent?) {
     var goals by remember { mutableStateOf<List<RemoteGoal>>(emptyList()) }
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
     var activity by remember { mutableStateOf<List<TaskActivity>>(emptyList()) }
+    var localCalendar by remember { mutableStateOf<List<LocalCalendarEvent>>(emptyList()) }
+    var emailDrafts by remember { mutableStateOf<List<LocalEmailDraft>>(emptyList()) }
+    var artifacts by remember { mutableStateOf<List<RemoteArtifact>>(emptyList()) }
     var approvals by remember { mutableStateOf<List<RemoteApproval>>(emptyList()) }
     var connectorPermissions by remember { mutableStateOf<List<ConnectorPermission>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
@@ -152,6 +155,9 @@ fun SecondBrainApp(intent: Intent?) {
             }
             runCatching { events = ApiClient.events(server, token) }
             runCatching { activity = ApiClient.activity(server, token) }
+            runCatching { localCalendar = ApiClient.localCalendar(server, token) }
+            runCatching { emailDrafts = ApiClient.emailDrafts(server, token) }
+            runCatching { artifacts = ApiClient.artifacts(server, token) }
             runCatching { approvals = ApiClient.approvals(server, token) }
             runCatching { connectorPermissions = ApiClient.connectorPermissions(server, token) }
             runCatching { goals = ApiClient.goals(server, token) }
@@ -329,7 +335,7 @@ fun SecondBrainApp(intent: Intent?) {
                 NavigationBar {
                     NavigationBarItem(selected = selectedTab == 0, onClick = { selectedTab = 0 }, icon = { Text("✦") }, label = { Text("会话") })
                     NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Text("◎") }, label = { Text("目标") })
-                    NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▤") }, label = { Text("采集") })
+                    NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▤") }, label = { Text("行动") })
                     NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Text("▣") }, label = { Text("文件") })
                     NavigationBarItem(selected = selectedTab == 4, onClick = { selectedTab = 4 }, icon = { Text("◇") }, label = { Text("审批") })
                     NavigationBarItem(selected = selectedTab == 5, onClick = { selectedTab = 5 }, icon = { Text("⚙") }, label = { Text("设置") })
@@ -370,7 +376,7 @@ fun SecondBrainApp(intent: Intent?) {
                             .onSuccess { notice = if (task.enabled) "后台任务已暂停" else "后台任务已恢复"; goals = ApiClient.goals(server, token) }
                             .onFailure { notice = "更新后台任务失败：${it.message}" }
                     } })
-                    2 -> EventsScreen(events, activity, onRefresh = { scope.launch { refresh() } })
+                    2 -> EventsScreen(events, activity, localCalendar, emailDrafts, artifacts, onRefresh = { scope.launch { refresh() } })
                     3 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
                     4 -> SafetyScreen(approvals, connectorPermissions,
                         onDecision = { item, decision, payload -> scope.launch {
@@ -382,6 +388,11 @@ fun SecondBrainApp(intent: Intent?) {
                             runCatching { ApiClient.executeForget(server, token, item.id) }
                                 .onSuccess { notice = "遗忘操作已执行"; refresh() }
                                 .onFailure { notice = "执行失败：${it.message}" }
+                        } },
+                        onExecuteCalendar = { item -> scope.launch {
+                            runCatching { ApiClient.executeCalendarApproval(server, token, item.id) }
+                                .onSuccess { notice = "本机日程已创建"; refresh() }
+                                .onFailure { notice = "创建日程失败：${it.message}" }
                         } },
                         onConnector = { item -> scope.launch {
                             runCatching { ApiClient.setConnectorPermission(server, token, item.connector, !item.enabled) }
@@ -765,10 +776,40 @@ private fun taskStatusLabel(status: String) = when (status) {
 }
 
 @Composable
-private fun EventsScreen(events: List<CollectedEvent>, activity: List<TaskActivity>, onRefresh: () -> Unit) {
+private fun EventsScreen(
+    events: List<CollectedEvent>, activity: List<TaskActivity>,
+    localCalendar: List<LocalCalendarEvent>, emailDrafts: List<LocalEmailDraft>, artifacts: List<RemoteArtifact>,
+    onRefresh: () -> Unit,
+) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        SectionHeader("活动与采集", "后台运行、短信、通知与只读日程都可追溯", "刷新", onRefresh)
+        SectionHeader("行动与采集", "已批准日程、本机草稿、Artifact 与采集记录", "刷新", onRefresh)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
+            if (localCalendar.isNotEmpty()) item { Text("本机日程", style = MaterialTheme.typography.titleMedium, color = Forest) }
+            items(localCalendar, key = { "calendar-${it.id}" }) { event ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(event.title, style = MaterialTheme.typography.titleSmall)
+                    Text("${event.startAt} — ${event.endAt}", style = MaterialTheme.typography.bodySmall)
+                    if (event.location.isNotBlank()) Text(event.location, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                } }
+            }
+            if (emailDrafts.isNotEmpty()) item { Text("本机邮件草稿 · 不会发送", style = MaterialTheme.typography.titleMedium, color = Forest, modifier = Modifier.padding(top = 8.dp)) }
+            items(emailDrafts, key = { "draft-${it.id}" }) { draft ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(draft.subject.ifBlank { "无主题草稿" }, style = MaterialTheme.typography.titleSmall)
+                    Text("收件人：${draft.recipients.joinToString(", ")}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    Text(draft.body, maxLines = 4, style = MaterialTheme.typography.bodySmall)
+                    Text(draft.updatedAt, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                } }
+            }
+            if (artifacts.isNotEmpty()) item { Text("Artifact", style = MaterialTheme.typography.titleMedium, color = Forest, modifier = Modifier.padding(top = 8.dp)) }
+            items(artifacts, key = { "artifact-${it.id}" }) { artifact ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(artifact.title, style = MaterialTheme.typography.titleSmall)
+                    Text("${artifact.kind} · v${artifact.version} · ${artifact.source.ifBlank { "手动创建" }}", style = MaterialTheme.typography.labelSmall, color = Forest)
+                    Text(artifact.preview, maxLines = 4, style = MaterialTheme.typography.bodySmall)
+                    Text(artifact.updatedAt, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                } }
+            }
             if (activity.isNotEmpty()) item { Text("后台活动", style = MaterialTheme.typography.titleMedium, color = Forest) }
             items(activity, key = { "run-${it.id}" }) { run ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -778,7 +819,7 @@ private fun EventsScreen(events: List<CollectedEvent>, activity: List<TaskActivi
                 } }
             }
             if (events.isNotEmpty()) item { Text("采集记录", style = MaterialTheme.typography.titleMedium, color = Forest, modifier = Modifier.padding(top = 8.dp)) }
-            if (events.isEmpty() && activity.isEmpty()) item { Text("暂无记录。授权后可同步短信、通知和近期日程。", color = Color.Gray) }
+            if (events.isEmpty() && activity.isEmpty() && localCalendar.isEmpty() && emailDrafts.isEmpty() && artifacts.isEmpty()) item { Text("暂无记录。批准建议或授权同步后，内容会出现在这里。", color = Color.Gray) }
             items(events, key = { it.id }) { event ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("${when (event.source) { "sms" -> "短信"; "calendar" -> "日程"; else -> "通知" }} · ${event.title}", style = MaterialTheme.typography.titleSmall)
@@ -823,6 +864,7 @@ private fun SafetyScreen(
     approvals: List<RemoteApproval>, permissions: List<ConnectorPermission>,
     onDecision: (RemoteApproval, String, String?) -> Unit,
     onExecuteForget: (RemoteApproval) -> Unit,
+    onExecuteCalendar: (RemoteApproval) -> Unit,
     onConnector: (ConnectorPermission) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -875,6 +917,8 @@ private fun SafetyScreen(
                         TextButton(onClick = { onDecision(item, "revoke", null) }) { Text("撤销") }
                     } else if (item.status == "approved" && item.actionType == "data.forget") {
                         Button(onClick = { onExecuteForget(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA04339))) { Text("执行已批准的遗忘") }
+                    } else if (item.status == "approved" && item.actionType == "calendar.local_create") {
+                        Button(onClick = { onExecuteCalendar(item) }) { Text("创建已批准的本机日程") }
                     } else if (item.status == "approved") {
                         TextButton(onClick = { onDecision(item, "revoke", null) }) { Text("撤销批准") }
                     }
