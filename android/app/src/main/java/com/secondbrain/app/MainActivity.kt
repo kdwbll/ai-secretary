@@ -22,6 +22,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
 import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -98,6 +100,19 @@ private fun smsStatus(context: Context): String {
     return "短信权限已授权 · 最近捕获：${at("sms_last_captured_at")} · 最近上传：${at("sms_last_uploaded_at")}"
 }
 
+private fun healthConnectStatus(context: Context): String {
+    val preferences = context.getSharedPreferences("second_brain", Context.MODE_PRIVATE)
+    return when (HealthConnectReader.sdkStatus(context)) {
+        HealthConnectClient.SDK_UNAVAILABLE -> "Health Connect 在此设备上不可用。"
+        HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> "需要安装或更新 Health Connect。"
+        else -> {
+            val millis = preferences.getLong("health_last_uploaded_at", 0)
+            val last = if (millis == 0L) "尚未同步" else java.text.DateFormat.getDateTimeInstance().format(java.util.Date(millis))
+            "Health Connect 可用 · 最近同步：$last"
+        }
+    }
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun SecondBrainApp(intent: Intent?) {
@@ -128,6 +143,7 @@ fun SecondBrainApp(intent: Intent?) {
     var openedNotification by remember { mutableStateOf<RemoteNotification?>(null) }
     var notificationStatus by remember { mutableStateOf(notificationListenerStatus(context)) }
     var currentSmsStatus by remember { mutableStateOf(smsStatus(context)) }
+    var currentHealthStatus by remember { mutableStateOf(healthConnectStatus(context)) }
     val scope = rememberCoroutineScope()
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.values.any { it }) scope.launch {
@@ -142,6 +158,7 @@ fun SecondBrainApp(intent: Intent?) {
     suspend fun refresh() {
         notificationStatus = notificationListenerStatus(context)
         currentSmsStatus = smsStatus(context)
+        currentHealthStatus = healthConnectStatus(context)
         connected = ApiClient.health(server, token)
         if (connected == true) {
             notice = "已安全联通电脑 · 数据自动同步"
@@ -163,6 +180,17 @@ fun SecondBrainApp(intent: Intent?) {
             runCatching { goals = ApiClient.goals(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
+            val now = System.currentTimeMillis()
+            if (now - preferences.getLong("health_last_checked_at", 0) >= 5 * 60 * 1000L) {
+                preferences.edit().putLong("health_last_checked_at", now).apply()
+                runCatching {
+                    if (!HealthConnectReader.hasPermissions(context)) return@runCatching
+                    val samples = HealthConnectReader.recent(context)
+                    ApiClient.syncHealth(server, token, samples)
+                    preferences.edit().putLong("health_last_uploaded_at", System.currentTimeMillis()).apply()
+                    currentHealthStatus = healthConnectStatus(context)
+                }
+            }
             runCatching {
                 val lastId = preferences.getLong("last_notification_id", 0)
                 val incoming = ApiClient.notifications(server, token, lastId)
@@ -196,6 +224,31 @@ fun SecondBrainApp(intent: Intent?) {
     }
     val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) syncCalendar() else notice = "未授予日历读取权限，未读取任何日程"
+    }
+
+    fun syncHealthData() {
+        scope.launch {
+            if (token.isBlank() || connected != true) {
+                notice = "请先连接电脑后再同步健康数据"
+                return@launch
+            }
+            notice = "正在只读获取 Health Connect 数据…"
+            runCatching {
+                val samples = HealthConnectReader.recent(context)
+                val changed = ApiClient.syncHealth(server, token, samples)
+                preferences.edit().putLong("health_last_uploaded_at", System.currentTimeMillis()).apply()
+                changed to samples.size
+            }.onSuccess { (changed, total) ->
+                currentHealthStatus = healthConnectStatus(context)
+                notice = "已同步 $total 条健康汇总，更新 $changed 条"
+            }.onFailure { notice = "健康数据同步失败：${it.message}" }
+        }
+    }
+    val healthPermission = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        if (granted.containsAll(HealthConnectReader.permissions)) syncHealthData()
+        else notice = "未授予全部健康读取权限，没有上传健康数据"
     }
 
     LaunchedEffect(server, token) {
@@ -399,7 +452,7 @@ fun SecondBrainApp(intent: Intent?) {
                                 .onSuccess { notice = if(item.enabled) "权限已撤销，后续同步已停止" else "权限已重新启用"; refresh() }
                                 .onFailure { notice = "权限更新失败：${it.message}" }
                         } }, onRefresh = { scope.launch { refresh() } })
-                    else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
+                    else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, currentHealthStatus, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
                         scope.launch {
@@ -430,6 +483,18 @@ fun SecondBrainApp(intent: Intent?) {
                     }, onCalendar = {
                         if (context.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED) syncCalendar()
                         else calendarPermission.launch(Manifest.permission.READ_CALENDAR)
+                    }, onHealth = {
+                        when (HealthConnectReader.sdkStatus(context)) {
+                            HealthConnectClient.SDK_UNAVAILABLE -> notice = "此手机不支持 Health Connect"
+                            HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> {
+                                notice = "请先安装或更新 Health Connect"
+                                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))) }
+                            }
+                            else -> scope.launch {
+                                if (HealthConnectReader.hasPermissions(context)) syncHealthData()
+                                else healthPermission.launch(HealthConnectReader.permissions)
+                            }
+                        }
                     })
                 }
             }
@@ -946,7 +1011,7 @@ private fun SafetyScreen(
 }
 
 @Composable
-private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onScanNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit) {
+private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCode: String, onPairingCode: (String) -> Unit, hasToken: Boolean, connected: Boolean?, usage: TokenActivity?, notificationStatus: String, smsStatus: String, healthStatus: String, onSave: () -> Unit, onNotifications: () -> Unit, onScanNotifications: () -> Unit, onLocation: () -> Unit, onCalendar: () -> Unit, onHealth: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 20.dp)) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
@@ -968,6 +1033,9 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         Text("不会后台持续定位；只有点击这个按钮时才读取并上报 GPS。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onCalendar, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("读取并同步近期日程") }
         Text("仅在点击时申请日历读取权限，并只读取昨天至未来 14 天的日程；不会创建、修改或删除手机日历。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        OutlinedButton(onClick = onHealth, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("授权并同步健康数据") }
+        Text(healthStatus, style = MaterialTheme.typography.bodySmall, color = if (healthStatus.contains("不可用") || healthStatus.contains("需要")) Color(0xFF9A433A) else Forest)
+        Text("只申请步数、心率、睡眠、体重、活动能量和距离的读取权限，不申请写入。授权后打开应用会每 5 分钟检查一次，也可随时手动同步。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         OutlinedButton(onClick = onScanNotifications, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("重新扫描当前通知栏") }
         Text(notificationStatus, style = MaterialTheme.typography.bodySmall, color = if (notificationStatus.startsWith("系统尚未")) Color(0xFF9A433A) else Forest)

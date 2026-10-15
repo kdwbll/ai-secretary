@@ -183,6 +183,23 @@ object ApiClient {
         }
     }
 
+    suspend fun syncHealth(server: String, token: String, samples: List<HealthSample>): Int = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("source", "Android Health Connect")
+        val records = org.json.JSONArray()
+        samples.forEach { sample ->
+            records.put(JSONObject()
+                .put("external_id", sample.externalId).put("recorded_at", sample.recordedAt)
+                .put("metric", sample.metric).put("value", sample.value).put("unit", sample.unit))
+        }
+        body.put("samples", records)
+        client.newCall(request(server, "/api/ingest/health", token)
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            val content = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error(runCatching { JSONObject(content).optString("detail") }.getOrNull().orEmpty().ifBlank { "健康数据同步失败（${response.code}）" })
+            JSONObject(content).optInt("imported")
+        }
+    }
+
     suspend fun notifications(server: String, token: String, afterId: Long): List<RemoteNotification> = withContext(Dispatchers.IO) {
         client.newCall(request(server, "/api/notifications?after_id=$afterId", token).get().build()).execute().use { response ->
             if (!response.isSuccessful) error("读取提醒失败（${response.code}）")

@@ -58,6 +58,9 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(second["imported"], 0)
             self.assertEqual(first["latest"], "2026-10-15T21:00:00+08:00")
             self.assertIn("Android Health Connect", service.memory.storage.read_text("health.md"))
+            samples[0]["value"] = 8001
+            self.assertEqual(service.sync_samples(samples)["imported"], 1)
+            self.assertEqual(service.summary(14)["series"][0]["latest"], 8001)
 
 
 if __name__ == "__main__":
