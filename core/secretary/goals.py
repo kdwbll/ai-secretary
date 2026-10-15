@@ -141,9 +141,10 @@ class GoalService:
         )
 
     def create_task(self, goal_id: int, title: str, description: str = "", due_at: Optional[str] = None,
-                    position: Optional[int] = None, idempotency_key: Optional[str] = None, schedule: str = "manual", next_run_at: Optional[str] = None, max_retries: int = 3, interval_minutes: int = 0) -> dict[str, Any]:
+                    position: Optional[int] = None, idempotency_key: Optional[str] = None, schedule: str = "manual", next_run_at: Optional[str] = None, max_retries: int = 3, interval_minutes: int = 0,
+                    event_source: str = "", event_kind: str = "", enabled: bool = True) -> dict[str, Any]:
         title = self._clean_title(title, "任务标题")
-        self._validate_schedule(schedule, next_run_at, max_retries, interval_minutes)
+        self._validate_schedule(schedule, next_run_at, max_retries, interval_minutes, event_source)
         key = (idempotency_key or "").strip() or None
         with self.database.connect() as db:
             if not db.execute("SELECT 1 FROM goals WHERE id=?", (goal_id,)).fetchone():
@@ -155,16 +156,17 @@ class GoalService:
             if position is None:
                 position = int(db.execute("SELECT COALESCE(MAX(position),0)+1 FROM tasks WHERE goal_id=?", (goal_id,)).fetchone()[0])
             now = self._now()
+            event_after_id = int(db.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]) if schedule == "event" else 0
             cursor = db.execute(
-                "INSERT INTO tasks(goal_id,title,description,status,due_at,position,created_at,updated_at,idempotency_key,schedule,next_run_at,max_retries,interval_minutes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (goal_id, title, description.strip(), "pending", due_at, position, now, now, key, schedule, next_run_at, max_retries, interval_minutes),
+                "INSERT INTO tasks(goal_id,title,description,status,due_at,position,created_at,updated_at,idempotency_key,schedule,next_run_at,max_retries,interval_minutes,event_source,event_kind,event_after_id,enabled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (goal_id, title, description.strip(), "pending", due_at, position, now, now, key, schedule, next_run_at, max_retries, interval_minutes, event_source.strip(), event_kind.strip(), event_after_id, int(enabled)),
             )
             task_id = int(cursor.lastrowid)
             self._event(db, goal_id, task_id, "task.created", {"title": title, "due_at": due_at, "position": position})
             return self._row(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
     def update_task(self, task_id: int, fields: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"title", "description", "due_at", "position", "schedule", "next_run_at", "max_retries", "interval_minutes"}
+        allowed = {"title", "description", "due_at", "position", "schedule", "next_run_at", "max_retries", "interval_minutes", "event_source", "event_kind", "enabled"}
         changed = {key: value for key, value in fields.items() if key in allowed}
         if "title" in changed:
             changed["title"] = self._clean_title(str(changed["title"]), "任务标题")
@@ -174,11 +176,19 @@ class GoalService:
             changed["due_at"] = str(changed["due_at"]).strip() or None
         if "position" in changed and (not isinstance(changed["position"], int) or changed["position"] < 0):
             raise ValueError("任务排序必须是非负整数")
+        for key in ("event_source", "event_kind"):
+            if key in changed:
+                changed[key] = str(changed[key] or "").strip()
+        if "enabled" in changed:
+            changed["enabled"] = int(bool(changed["enabled"]))
         with self.database.connect() as db:
             current = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             if not current:
                 raise KeyError("任务不存在")
-            self._validate_schedule(changed.get("schedule", current["schedule"]), changed.get("next_run_at", current["next_run_at"]), changed.get("max_retries", current["max_retries"]), changed.get("interval_minutes", current["interval_minutes"]))
+            self._validate_schedule(changed.get("schedule", current["schedule"]), changed.get("next_run_at", current["next_run_at"]), changed.get("max_retries", current["max_retries"]), changed.get("interval_minutes", current["interval_minutes"]), changed.get("event_source", current["event_source"]))
+            final_schedule = changed.get("schedule", current["schedule"])
+            if final_schedule == "event" and {"schedule", "event_source", "event_kind"} & changed.keys():
+                changed["event_after_id"] = int(db.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0])
             if not changed:
                 return self._row(current)
             assignments = ",".join(f"{key}=?" for key in changed)
@@ -187,11 +197,18 @@ class GoalService:
             return self._row(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
     @staticmethod
-    def _validate_schedule(schedule: Any, next_run_at: Any, max_retries: Any, interval_minutes: Any) -> None:
-        if schedule not in {"manual", "once", "interval"}:
+    def _validate_schedule(schedule: Any, next_run_at: Any, max_retries: Any, interval_minutes: Any, event_source: Any = "") -> None:
+        if schedule not in {"manual", "once", "interval", "event"}:
             raise ValueError("任务计划类型无效")
-        if schedule != "manual" and not str(next_run_at or "").strip():
+        if schedule in {"once", "interval"} and not str(next_run_at or "").strip():
             raise ValueError("定时任务必须提供下次运行时间")
+        if schedule in {"once", "interval"}:
+            try:
+                datetime.fromisoformat(str(next_run_at))
+            except ValueError as exc:
+                raise ValueError("下次运行时间格式无效") from exc
+        if schedule == "event" and not str(event_source or "").strip():
+            raise ValueError("事件任务必须选择事件来源")
         if not isinstance(max_retries, int) or not 0 <= max_retries <= 10:
             raise ValueError("最大重试次数必须在 0 到 10 之间")
         if not isinstance(interval_minutes, int) or not 0 <= interval_minutes <= 525600:

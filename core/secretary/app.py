@@ -43,7 +43,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.13.1"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -191,6 +191,7 @@ class NotificationSettingsInput(BaseModel):
     quiet_start: str = Field(default="22:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     quiet_end: str = Field(default="07:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     dedup_minutes: int = Field(default=60, ge=1, le=1440)
+    daily_limit: int = Field(default=3, ge=1, le=20)
 
 
 class GoalCreateInput(BaseModel):
@@ -214,10 +215,13 @@ class TaskCreateInput(BaseModel):
     description: str = Field(default="", max_length=4000)
     due_at: Optional[str] = Field(default=None, max_length=64)
     position: Optional[int] = Field(default=None, ge=0)
-    schedule: str = Field(default="manual", pattern="^(manual|once|interval)$")
+    schedule: str = Field(default="manual", pattern="^(manual|once|interval|event)$")
     next_run_at: Optional[str] = Field(default=None, max_length=64)
     max_retries: int = Field(default=3, ge=0, le=10)
     interval_minutes: int = Field(default=0, ge=0, le=525600)
+    event_source: str = Field(default="", max_length=80)
+    event_kind: str = Field(default="", max_length=120)
+    enabled: bool = True
 
 
 class TaskUpdateInput(BaseModel):
@@ -225,10 +229,13 @@ class TaskUpdateInput(BaseModel):
     description: str = Field(default="", max_length=4000)
     due_at: Optional[str] = Field(default=None, max_length=64)
     position: Optional[int] = Field(default=None, ge=0)
-    schedule: Optional[str] = Field(default=None, pattern="^(manual|once|interval)$")
+    schedule: Optional[str] = Field(default=None, pattern="^(manual|once|interval|event)$")
     next_run_at: Optional[str] = Field(default=None, max_length=64)
     max_retries: Optional[int] = Field(default=None, ge=0, le=10)
     interval_minutes: Optional[int] = Field(default=None, ge=0, le=525600)
+    event_source: Optional[str] = Field(default=None, max_length=80)
+    event_kind: Optional[str] = Field(default=None, max_length=120)
+    enabled: Optional[bool] = None
 
 
 class TaskStatusInput(BaseModel):
@@ -342,6 +349,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(scheduled(sync_email_accounts), "interval", minutes=30, id="email-sync", max_instances=1)
         scheduler.add_job(scheduled(MEMORY.sync_index), "interval", seconds=15, id="memory-index", max_instances=1)
         scheduler.add_job(scheduled(RUNNER.wake_due), "interval", minutes=1, id="task-runner", max_instances=1)
+        scheduler.add_job(scheduled(RUNNER.wake_events), "interval", seconds=15, id="event-runner", max_instances=1)
         scheduler.start()
     except ImportError:
         pass
@@ -698,7 +706,7 @@ def task_create(goal_id: int, body: TaskCreateInput, x_idempotency_key: Optional
         return GOALS.create_task(
             goal_id, body.title, body.description, body.due_at, body.position,
             x_idempotency_key, body.schedule, body.next_run_at, body.max_retries,
-            body.interval_minutes,
+            body.interval_minutes, body.event_source, body.event_kind, body.enabled,
         )
     except KeyError as exc:
         raise HTTPException(404, str(exc))
@@ -735,6 +743,21 @@ def task_run_start(task_id: int):
 def task_run_finish(run_id: int, body: TaskRunFinishInput):
     try: return RUNNER.finish(run_id, body.success, body.result, body.error)
     except KeyError as exc: raise HTTPException(404, str(exc))
+
+
+@app.post("/api/task-runs/{run_id}/pause")
+def task_run_pause(run_id: int):
+    try:
+        return RUNNER.pause(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/activity")
+def task_activity(goal_id: Optional[int] = None, limit: int = 100):
+    return {"activity": RUNNER.activity(goal_id, limit)}
 
 
 @app.get("/api/providers")
@@ -875,6 +898,7 @@ def notification_settings():
         "quiet_start": DB.setting("quiet_start", "22:30") or "22:30",
         "quiet_end": DB.setting("quiet_end", "07:30") or "07:30",
         "dedup_minutes": int(DB.setting("notification_dedup_minutes", "60") or 60),
+        "daily_limit": int(DB.setting("notification_daily_limit", "3") or 3),
     }
 
 
@@ -884,6 +908,7 @@ def notification_settings_save(body: NotificationSettingsInput):
     DB.set_setting("quiet_start", body.quiet_start)
     DB.set_setting("quiet_end", body.quiet_end)
     DB.set_setting("notification_dedup_minutes", str(body.dedup_minutes))
+    DB.set_setting("notification_daily_limit", str(body.daily_limit))
     return {"ok": True, **notification_settings()}
 
 
@@ -1019,7 +1044,9 @@ async def health_import(file: UploadFile = File(...)):
         raise HTTPException(400, "请选择 Apple 健康 XML/ZIP，或小米运动 CSV/JSON/ZIP")
     temp_path = await save_upload_to_temp(file, suffix)
     try:
-        return HEALTH.import_file(temp_path, file.filename or "health-data")
+        result = HEALTH.import_file(temp_path, file.filename or "health-data")
+        EVENTS.publish("health", "imported", {"title": file.filename or "健康数据", **result}, "local")
+        return result
     except (ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         raise HTTPException(400, f"健康数据无法识别：{exc}")
     finally:
@@ -1031,7 +1058,14 @@ async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix
     temp_path = await save_upload_to_temp(file, suffix)
     try:
-        return FILES.ingest(temp_path, file.filename or "upload")
+        result = FILES.ingest(temp_path, file.filename or "upload")
+        if not result.get("duplicate"):
+            EVENTS.publish("file", "analyzed", {
+                "title": result.get("original_name", file.filename or "文件"),
+                "hash": result.get("hash", ""),
+                "summary": str(result.get("extracted_text", ""))[:1000],
+            }, "local")
+        return result
     finally:
         temp_path.unlink(missing_ok=True)
 
