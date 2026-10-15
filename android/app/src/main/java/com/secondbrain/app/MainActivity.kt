@@ -184,8 +184,8 @@ fun SecondBrainApp(intent: Intent?) {
             if (now - preferences.getLong("health_last_checked_at", 0) >= 5 * 60 * 1000L) {
                 preferences.edit().putLong("health_last_checked_at", now).apply()
                 runCatching {
-                    if (!HealthConnectReader.hasPermissions(context)) return@runCatching
-                    HealthSyncWorker.schedule(context)
+                    if (!HealthConnectReader.hasReadPermissions(context)) return@runCatching
+                    if (HealthConnectReader.canReadInBackground(context)) HealthSyncWorker.schedule(context)
                     val samples = HealthConnectReader.recent(context)
                     ApiClient.syncHealth(server, token, samples)
                     preferences.edit().putLong("health_last_uploaded_at", System.currentTimeMillis()).apply()
@@ -245,14 +245,27 @@ fun SecondBrainApp(intent: Intent?) {
             }.onFailure { notice = "健康数据同步失败：${it.message}" }
         }
     }
+    val backgroundHealthPermission = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        val backgroundPermission = HealthConnectReader.backgroundPermission(context)
+        if (backgroundPermission != null && granted.contains(backgroundPermission)) {
+            HealthSyncWorker.schedule(context)
+        }
+        syncHealthData()
+    }
     val healthPermission = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { granted ->
-        if (granted.containsAll(HealthConnectReader.permissions(context))) {
-            HealthSyncWorker.schedule(context)
-            syncHealthData()
-        }
-        else notice = "未授予全部健康读取权限，没有上传健康数据"
+        if (granted.containsAll(HealthConnectReader.readPermissions)) {
+            val backgroundPermission = HealthConnectReader.backgroundPermission(context)
+            if (backgroundPermission != null && !granted.contains(backgroundPermission)) {
+                notice = "健康读取已授权，请再允许后台读取"
+                backgroundHealthPermission.launch(setOf(backgroundPermission))
+            } else {
+                syncHealthData()
+            }
+        } else notice = "未授予健康读取权限，没有上传健康数据"
     }
 
     LaunchedEffect(server, token) {
@@ -495,8 +508,12 @@ fun SecondBrainApp(intent: Intent?) {
                                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))) }
                             }
                             else -> scope.launch {
-                                if (HealthConnectReader.hasPermissions(context)) syncHealthData()
-                                else healthPermission.launch(HealthConnectReader.permissions(context))
+                                if (HealthConnectReader.hasReadPermissions(context)) {
+                                    val backgroundPermission = HealthConnectReader.backgroundPermission(context)
+                                    if (backgroundPermission != null && !HealthConnectReader.canReadInBackground(context)) {
+                                        backgroundHealthPermission.launch(setOf(backgroundPermission))
+                                    } else syncHealthData()
+                                } else healthPermission.launch(HealthConnectReader.readPermissions)
                             }
                         }
                     })

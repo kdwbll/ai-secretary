@@ -17,7 +17,7 @@ class HealthSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
         val token = preferences.getString("access_token", "").orEmpty()
         if (server.isBlank() || token.isBlank()) return Result.success()
         return try {
-            if (!HealthConnectReader.hasPermissions(applicationContext)) return Result.success()
+            if (!HealthConnectReader.hasReadPermissions(applicationContext) || !HealthConnectReader.canReadInBackground(applicationContext)) return Result.success()
             val samples = HealthConnectReader.recent(applicationContext)
             ApiClient.syncHealth(server, token, samples)
             preferences.edit().putLong("health_last_uploaded_at", System.currentTimeMillis()).apply()

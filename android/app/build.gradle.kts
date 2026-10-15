@@ -9,7 +9,7 @@ val hasReleaseSigning = listOf(releaseKeystorePath, releaseStorePassword, releas
 android {
     namespace = "com.secondbrain.app"
     compileSdk = 35
-    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 26; versionName = "0.15.1" }
+    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 27; versionName = "0.15.2" }
     signingConfigs {
         if (hasReleaseSigning) create("stableRelease") {
             storeFile = file(releaseKeystorePath!!)
