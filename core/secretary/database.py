@@ -212,6 +212,55 @@ def _add_goal_task_kernel(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_task_events_goal ON task_events(goal_id,id DESC)")
 
 
+def _add_task_scheduling(db: sqlite3.Connection) -> None:
+    columns = _columns(db, "tasks")
+    for name, definition in (
+        ("schedule", "TEXT NOT NULL DEFAULT 'manual'"), ("next_run_at", "TEXT"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"), ("max_retries", "INTEGER NOT NULL DEFAULT 3"),
+    ):
+        if name not in columns:
+            db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status,next_run_at)")
+
+def _add_event_receipts(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS event_receipts (fingerprint TEXT PRIMARY KEY,event_id INTEGER NOT NULL REFERENCES events(id),created_at TEXT NOT NULL)")
+
+
+def _add_task_interval(db: sqlite3.Connection) -> None:
+    if "interval_minutes" not in _columns(db, "tasks"):
+        db.execute("ALTER TABLE tasks ADD COLUMN interval_minutes INTEGER NOT NULL DEFAULT 0")
+
+
+def _complete_task_runner(db: sqlite3.Connection) -> None:
+    task_columns = _columns(db, "tasks")
+    for name, definition in (
+        ("event_source", "TEXT NOT NULL DEFAULT ''"),
+        ("event_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("event_after_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if name not in task_columns:
+            db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+    run_columns = _columns(db, "task_runs")
+    if "source_event_id" not in run_columns:
+        db.execute("ALTER TABLE task_runs ADD COLUMN source_event_id INTEGER REFERENCES events(id)")
+    notification_columns = _columns(db, "notifications")
+    for name, definition in (
+        ("reason_key", "TEXT NOT NULL DEFAULT ''"),
+        ("alerted", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in notification_columns:
+            db.execute(f"ALTER TABLE notifications ADD COLUMN {name} {definition}")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_event ON tasks(enabled,schedule,event_source,event_kind)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_source_event ON task_runs(source_event_id,task_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_alerted ON notifications(alerted,created_at)")
+
+
+def _add_event_watermark(db: sqlite3.Connection) -> None:
+    if "event_after_id" not in _columns(db, "tasks"):
+        db.execute("ALTER TABLE tasks ADD COLUMN event_after_id INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "add provider consumption level", _add_provider_consumption_level),
     Migration(2, "add chat attachments", _add_chat_attachments),
@@ -224,6 +273,11 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(9, "remove noisy Android service notifications", _purge_noise_notifications),
     Migration(10, "add incremental memory search and confirmation queue", _add_memory_index),
     Migration(11, "add goals tasks runs and audit events", _add_goal_task_kernel),
+    Migration(12, "add task schedules retries and due index", _add_task_scheduling),
+    Migration(13, "add idempotent event receipts", _add_event_receipts),
+    Migration(14, "add recurring task interval", _add_task_interval),
+    Migration(15, "complete event task runner and alert limits", _complete_task_runner),
+    Migration(16, "add event subscription watermark", _add_event_watermark),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -254,6 +308,8 @@ class Database:
                 "morning_time": "07:30", "review_time": "22:30", "max_context_files": "5",
                 "usd_cny_rate": "7.20", "location_enabled": "0", "map_provider": "amap",
                 "notifications_enabled": "0", "theme": "system", "max_upload_mb": "200",
+                "quiet_start": "22:30", "quiet_end": "07:30", "notification_dedup_minutes": "60",
+                "notification_daily_limit": "3",
             }
             for key, value in defaults.items():
                 db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, value))
@@ -289,13 +345,14 @@ class Database:
             "access_tokens": {"name", "token_hash", "revoked_at"},
             "chat_messages": {"attachments", "title"},
             "locations": {"source", "latitude", "longitude", "enabled"},
-            "notifications": {"kind", "title", "body"},
             "memory_documents": {"path", "content", "terms", "summary", "fingerprint"},
             "memory_candidates": {"path", "section", "fact", "source", "reason", "status"},
             "goals": {"title", "status", "created_at", "updated_at"},
-            "tasks": {"goal_id", "title", "status", "position"},
-            "task_runs": {"task_id", "trigger", "status"},
+            "tasks": {"goal_id", "title", "status", "position", "schedule", "next_run_at", "retry_count", "max_retries", "interval_minutes", "event_source", "event_kind", "event_after_id", "enabled"},
+            "task_runs": {"task_id", "trigger", "status", "source_event_id"},
             "task_events": {"goal_id", "kind", "payload"},
+            "event_receipts": {"fingerprint", "event_id", "created_at"},
+            "notifications": {"kind", "title", "body", "reason_key", "alerted"},
         }
         missing = [f"{table}.{column}" for table, columns in required.items() for column in columns - _columns(db, table)]
         if missing:
