@@ -102,6 +102,13 @@ class TaskRunner:
         )
         completed = 0
         for event in events:
+            permission = self.database.rows(
+                "SELECT enabled FROM connector_permissions WHERE connector=?", (event["source"],)
+            )
+            if permission and not bool(permission[0]["enabled"]):
+                with self.database.connect() as db:
+                    db.execute("UPDATE events SET status='processed' WHERE id=? AND status='pending'", (event["id"],))
+                continue
             try:
                 source_payload = json.loads(event["payload"] or "{}")
             except (TypeError, json.JSONDecodeError):
