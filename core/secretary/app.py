@@ -152,6 +152,19 @@ class CalendarSyncInput(BaseModel):
     events: list[CalendarEventInput] = Field(default_factory=list, max_length=200)
 
 
+class HealthSampleInput(BaseModel):
+    external_id: str = Field(min_length=1, max_length=240)
+    recorded_at: str = Field(min_length=1, max_length=64)
+    metric: str = Field(pattern="^(steps|heart_rate|resting_heart_rate|sleep_hours|weight|active_energy|distance)$")
+    value: float
+    unit: str = Field(default="", max_length=40)
+
+
+class HealthSyncInput(BaseModel):
+    source: str = Field(default="Android Health Connect", max_length=120)
+    samples: list[HealthSampleInput] = Field(default_factory=list, max_length=5000)
+
+
 class EmailAccountInput(BaseModel):
     name: str
     host: str
@@ -1345,6 +1358,18 @@ def ingest_calendar(body: CalendarSyncInput):
         raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/ingest/health")
+def ingest_health(body: HealthSyncInput):
+    try:
+        SAFETY.require("read", connector="health")
+        result = HEALTH.sync_samples([item.model_dump() for item in body.samples], body.source)
+        if result["imported"]:
+            EVENTS.publish("health", "synced", {"title": "Android 健康数据同步", **result}, "paired_device")
+        return result
+    except ApprovalError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @app.post("/api/events")

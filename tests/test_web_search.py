@@ -74,9 +74,21 @@ class WebSearchTests(TestCase):
         self.assertFalse(SecretaryService._web_search_candidate("我今天心情不错"))
         self.assertFalse(SecretaryService._web_search_candidate("帮我整理一下本周任务"))
         self.assertFalse(SecretaryService._web_search_candidate("我上个月花了多少钱"))
+        self.assertFalse(SecretaryService._web_search_candidate("我今天花了多少钱"))
+        self.assertFalse(SecretaryService._web_search_candidate("我设置了哪些目标"))
         self.assertTrue(SecretaryService._web_search_candidate("帮我搜索一下这个软件的官网"))
         self.assertTrue(SecretaryService._web_search_candidate("这款手机现在多少钱"))
         self.assertTrue(SecretaryService._web_search_candidate("今天有什么新闻"))
+
+    def test_irrelevant_provider_results_are_removed_and_matches_rank_first(self):
+        results = [
+            {"title": "彩票中奖号码", "snippet": "今日开奖", "site": "论坛"},
+            {"title": "成都天气预报", "snippet": "今天成都晴", "site": "气象服务"},
+            {"title": "成都旅游攻略", "snippet": "景点推荐", "site": "旅行网"},
+        ]
+        ranked = WebSearchService._rank("帮我查一下成都天气", results, 5)
+        self.assertEqual([item["title"] for item in ranked], ["成都天气预报"])
+        self.assertNotIn("彩票中奖号码", [item["title"] for item in ranked])
 
     def test_external_results_are_marked_untrusted_and_require_sources(self):
         context = SecretaryService._web_search_context(SearchOutcome(results=[{

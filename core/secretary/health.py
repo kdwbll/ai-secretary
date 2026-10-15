@@ -109,6 +109,34 @@ class HealthService:
             series.append({"metric": metric, **meta, "values": values, "latest": non_null[-1] if non_null else None})
         return {"days": days, "dates": dates, "series": series, "sources": [{"name": key, "count": value} for key, value in sorted(sources.items())], "sample_count": len(rows)}
 
+    def sync_samples(self, samples: list[dict[str, Any]], source: str = "Android Health Connect") -> dict[str, Any]:
+        """Store structured, read-only health records sent by a paired phone."""
+        normalized: list[dict[str, Any]] = []
+        for item in samples:
+            metric = str(item.get("metric") or "")
+            recorded_at = str(item.get("recorded_at") or "").strip()
+            value = self._number(item.get("value"))
+            if metric not in METRICS or not recorded_at or value is None:
+                continue
+            external_id = str(item.get("external_id") or "").strip()
+            sample = self._sample(
+                recorded_at, metric, value,
+                str(item.get("unit") or METRICS[metric]["unit"]), source,
+                {"external_id": external_id, "recorded_at": recorded_at, "metric": metric, "value": value},
+            )
+            if external_id:
+                sample["external_id"] = hashlib.sha256(f"{source}:{external_id}".encode()).hexdigest()
+            normalized.append(sample)
+        inserted = self._store(normalized)
+        if inserted:
+            labels = "、".join(METRICS[key]["label"] for key in sorted({item["metric"] for item in normalized}))
+            self.memory.upsert_fact(
+                "health.md", "指标与趋势", f"已连接 {source} 数据：{labels}（最近同步 {inserted} 条）",
+                f"{date.today().isoformat()} Android 健康同步", old_fact=f"已连接 {source} 数据：",
+            )
+        latest = max((item["recorded_at"] for item in normalized), default="")
+        return {"ok": True, "source": source, "received": len(samples), "detected": len(normalized), "imported": inserted, "latest": latest}
+
     def _parse_bytes(self, raw: bytes, name: str, source: str) -> list[dict[str, Any]]:
         suffix = Path(name).suffix.lower()
         if suffix == ".xml":
