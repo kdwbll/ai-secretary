@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from .database import Database
@@ -21,6 +21,13 @@ TASK_TRANSITIONS = {
     "blocked": {"pending", "in_progress", "cancelled"},
     "completed": set(),
     "cancelled": set(),
+}
+
+GOAL_TEMPLATES = {
+    "health_followup": {"name": "体检复查", "description": "整理报告、确认复查项目并按时提醒。"},
+    "exam_study": {"name": "考试复习", "description": "拆分复习范围、每日推进并在考前检查。"},
+    "travel_preparation": {"name": "旅行准备", "description": "集中跟进行程、证件、预订和打包事项。"},
+    "bill_subscription": {"name": "账单与订阅检查", "description": "定期检查账单、续费和不再需要的订阅。"},
 }
 
 
@@ -95,6 +102,47 @@ class GoalService:
             goal_id = int(cursor.lastrowid)
             self._event(db, goal_id, None, "goal.created", {"title": title, "due_at": due_at})
             return self._row(db.execute("SELECT * FROM goals WHERE id=?", (goal_id,)).fetchone())
+
+    def templates(self) -> list[dict[str, Any]]:
+        return [{"id": key, **value} for key, value in GOAL_TEMPLATES.items()]
+
+    def create_from_template(self, template_id: str, *, title: str = "", due_at: Optional[str] = None,
+                             idempotency_key: Optional[str] = None) -> dict[str, Any]:
+        if template_id not in GOAL_TEMPLATES:
+            raise KeyError("目标模板不存在")
+        template = GOAL_TEMPLATES[template_id]
+        key = (idempotency_key or f"template:{template_id}:{title}:{due_at}").strip()
+        goal = self.create_goal(title.strip() or template["name"], template["description"], due_at, key)
+        now = datetime.now().astimezone()
+        definitions = {
+            "health_followup": [
+                ("整理体检报告与异常指标", "manual", None, 0, "", ""),
+                ("确认医院、科室与复查材料", "manual", None, 0, "", ""),
+                ("复查前提醒", "once", (now + timedelta(days=7)).isoformat(timespec="seconds"), 0, "", ""),
+            ],
+            "exam_study": [
+                ("列出考试范围与薄弱点", "manual", None, 0, "", ""),
+                ("每日复习提醒", "interval", (now + timedelta(days=1)).isoformat(timespec="seconds"), 1440, "", ""),
+                ("完成一次模拟测试", "manual", None, 0, "", ""),
+            ],
+            "travel_preparation": [
+                ("确认交通与住宿", "manual", None, 0, "", ""),
+                ("关注新的行程邮件", "event", None, 0, "email", "collected"),
+                ("出发前检查证件与行李", "once", (now + timedelta(days=7)).isoformat(timespec="seconds"), 0, "", ""),
+            ],
+            "bill_subscription": [
+                ("整理当前订阅清单", "manual", None, 0, "", ""),
+                ("每月检查账单与续费", "interval", (now + timedelta(days=30)).isoformat(timespec="seconds"), 43200, "", ""),
+                ("标记需要取消或降级的服务", "manual", None, 0, "", ""),
+            ],
+        }
+        for index, (task_title, schedule, next_run, interval, event_source, event_kind) in enumerate(definitions[template_id]):
+            self.create_task(
+                int(goal["id"]), task_title, position=index + 1, idempotency_key=f"{key}:task:{index}",
+                schedule=schedule, next_run_at=next_run, interval_minutes=interval,
+                event_source=event_source, event_kind=event_kind,
+            )
+        return self.goal(int(goal["id"]))
 
     def update_goal(self, goal_id: int, fields: dict[str, Any]) -> dict[str, Any]:
         allowed = {"title", "description", "due_at"}
