@@ -1,0 +1,37 @@
+name: Build Android APK
+
+on:
+  push:
+    tags: ["android-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build installable APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+      - name: Verify APK output
+        run: test -s android/app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SecondBrain-android-${{ github.ref_name }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Attach APK to version release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="${GITHUB_REF_NAME#android-}"
+          gh release view "$release_tag" >/dev/null 2>&1 || gh release create "$release_tag" --title "SecondBrain ${release_tag#v}" --generate-notes
+          cp android/app/build/outputs/apk/debug/app-debug.apk "SecondBrain-android-${release_tag}.apk"
+          gh release upload "$release_tag" "SecondBrain-android-${release_tag}.apk" --clobber

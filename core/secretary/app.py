@@ -23,6 +23,8 @@ from .connectors import ImapConnector
 from .files import FilePipeline
 from .health import HealthService
 from .goals import GoalService
+from .runner import TaskRunner
+from .event_hub import EventHub
 from .memory import MemoryDocument, MemoryEngine
 from .models import ModelError, ModelRouter, PROVIDER_TEMPLATES, Route
 from .reports import ReportService
@@ -41,7 +43,7 @@ RESOURCE_ROOT = Path(os.environ.get(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]),
 )).resolve()
 ROOT = Path(os.environ.get("SECOND_BRAIN_ROOT", RESOURCE_ROOT)).resolve()
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.13.1"
 RUNTIME = ServiceRuntime()
 DB = Database(ROOT / "data" / "second-brain.db")
 ACCESS = AccessControl(DB)
@@ -56,6 +58,8 @@ FILES = FilePipeline(ROOT / "files", DB, MEMORY, MODELS)
 REPORTS = ReportService(MEMORY, DB, NOTIFICATIONS.publish)
 HEALTH = HealthService(DB, MEMORY)
 GOALS = GoalService(DB)
+RUNNER = TaskRunner(DB, NOTIFICATIONS)
+EVENTS = EventHub(DB)
 
 
 class ChatInput(BaseModel):
@@ -118,6 +122,13 @@ class NotificationInput(BaseModel):
     text: str
 
 
+class EventInput(BaseModel):
+    source: str = Field(min_length=1, max_length=80)
+    kind: str = Field(min_length=1, max_length=120)
+    payload: dict = Field(default_factory=dict)
+    trust: str = Field(default="untrusted", pattern="^(untrusted|local|paired_device)$")
+
+
 class CalendarEventInput(BaseModel):
     external_id: str = Field(min_length=1, max_length=160)
     title: str = Field(default="（无标题日程）", max_length=500)
@@ -177,6 +188,10 @@ class WebSearchSettingsInput(BaseModel):
 
 class NotificationSettingsInput(BaseModel):
     enabled: bool = False
+    quiet_start: str = Field(default="22:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    quiet_end: str = Field(default="07:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    dedup_minutes: int = Field(default=60, ge=1, le=1440)
+    daily_limit: int = Field(default=3, ge=1, le=20)
 
 
 class GoalCreateInput(BaseModel):
@@ -200,6 +215,13 @@ class TaskCreateInput(BaseModel):
     description: str = Field(default="", max_length=4000)
     due_at: Optional[str] = Field(default=None, max_length=64)
     position: Optional[int] = Field(default=None, ge=0)
+    schedule: str = Field(default="manual", pattern="^(manual|once|interval|event)$")
+    next_run_at: Optional[str] = Field(default=None, max_length=64)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    interval_minutes: int = Field(default=0, ge=0, le=525600)
+    event_source: str = Field(default="", max_length=80)
+    event_kind: str = Field(default="", max_length=120)
+    enabled: bool = True
 
 
 class TaskUpdateInput(BaseModel):
@@ -207,10 +229,22 @@ class TaskUpdateInput(BaseModel):
     description: str = Field(default="", max_length=4000)
     due_at: Optional[str] = Field(default=None, max_length=64)
     position: Optional[int] = Field(default=None, ge=0)
+    schedule: Optional[str] = Field(default=None, pattern="^(manual|once|interval|event)$")
+    next_run_at: Optional[str] = Field(default=None, max_length=64)
+    max_retries: Optional[int] = Field(default=None, ge=0, le=10)
+    interval_minutes: Optional[int] = Field(default=None, ge=0, le=525600)
+    event_source: Optional[str] = Field(default=None, max_length=80)
+    event_kind: Optional[str] = Field(default=None, max_length=120)
+    enabled: Optional[bool] = None
 
 
 class TaskStatusInput(BaseModel):
     status: str
+
+class TaskRunFinishInput(BaseModel):
+    success: bool
+    result: dict = Field(default_factory=dict)
+    error: str = Field(default="", max_length=2000)
 
 
 def upload_limit_bytes() -> int:
@@ -297,6 +331,7 @@ def sync_email_accounts(refresh: bool = False) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SERVICE.initialize()
+    RUNNER.recover()
     scheduler = None
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -313,6 +348,8 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(scheduled(REPORTS.weekly), "cron", day_of_week="sun", hour=23, minute=0, id="weekly")
         scheduler.add_job(scheduled(sync_email_accounts), "interval", minutes=30, id="email-sync", max_instances=1)
         scheduler.add_job(scheduled(MEMORY.sync_index), "interval", seconds=15, id="memory-index", max_instances=1)
+        scheduler.add_job(scheduled(RUNNER.wake_due), "interval", minutes=1, id="task-runner", max_instances=1)
+        scheduler.add_job(scheduled(RUNNER.wake_events), "interval", seconds=15, id="event-runner", max_instances=1)
         scheduler.start()
     except ImportError:
         pass
@@ -666,7 +703,11 @@ def goal_events(goal_id: int, limit: int = 100):
 @app.post("/api/goals/{goal_id}/tasks")
 def task_create(goal_id: int, body: TaskCreateInput, x_idempotency_key: Optional[str] = Header(default=None)):
     try:
-        return GOALS.create_task(goal_id, body.title, body.description, body.due_at, body.position, x_idempotency_key)
+        return GOALS.create_task(
+            goal_id, body.title, body.description, body.due_at, body.position,
+            x_idempotency_key, body.schedule, body.next_run_at, body.max_retries,
+            body.interval_minutes, body.event_source, body.event_kind, body.enabled,
+        )
     except KeyError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
@@ -691,6 +732,32 @@ def task_status(task_id: int, body: TaskStatusInput):
         raise HTTPException(404, str(exc))
     except ValueError as exc:
         raise HTTPException(409, str(exc))
+
+@app.post("/api/tasks/{task_id}/runs")
+def task_run_start(task_id: int):
+    try: return RUNNER.start(task_id)
+    except KeyError as exc: raise HTTPException(404, str(exc))
+    except ValueError as exc: raise HTTPException(409, str(exc))
+
+@app.post("/api/task-runs/{run_id}/finish")
+def task_run_finish(run_id: int, body: TaskRunFinishInput):
+    try: return RUNNER.finish(run_id, body.success, body.result, body.error)
+    except KeyError as exc: raise HTTPException(404, str(exc))
+
+
+@app.post("/api/task-runs/{run_id}/pause")
+def task_run_pause(run_id: int):
+    try:
+        return RUNNER.pause(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/activity")
+def task_activity(goal_id: Optional[int] = None, limit: int = 100):
+    return {"activity": RUNNER.activity(goal_id, limit)}
 
 
 @app.get("/api/providers")
@@ -826,13 +893,23 @@ def map_config():
 
 @app.get("/api/notification-settings")
 def notification_settings():
-    return {"enabled": DB.setting("notifications_enabled", "0") == "1"}
+    return {
+        "enabled": DB.setting("notifications_enabled", "0") == "1",
+        "quiet_start": DB.setting("quiet_start", "22:30") or "22:30",
+        "quiet_end": DB.setting("quiet_end", "07:30") or "07:30",
+        "dedup_minutes": int(DB.setting("notification_dedup_minutes", "60") or 60),
+        "daily_limit": int(DB.setting("notification_daily_limit", "3") or 3),
+    }
 
 
 @app.post("/api/notification-settings")
 def notification_settings_save(body: NotificationSettingsInput):
     DB.set_setting("notifications_enabled", "1" if body.enabled else "0")
-    return {"ok": True}
+    DB.set_setting("quiet_start", body.quiet_start)
+    DB.set_setting("quiet_end", body.quiet_end)
+    DB.set_setting("notification_dedup_minutes", str(body.dedup_minutes))
+    DB.set_setting("notification_daily_limit", str(body.daily_limit))
+    return {"ok": True, **notification_settings()}
 
 
 @app.get("/api/web-search/settings")
@@ -938,6 +1015,11 @@ def ingest_calendar(body: CalendarSyncInput):
         raise HTTPException(400, str(exc))
 
 
+@app.post("/api/events")
+def publish_event(body: EventInput):
+    return EVENTS.publish(body.source, body.kind, body.payload, body.trust)
+
+
 @app.get("/api/events")
 def events(source: Optional[str] = None, limit: int = 100):
     limit = max(1, min(limit, 500))
@@ -962,7 +1044,9 @@ async def health_import(file: UploadFile = File(...)):
         raise HTTPException(400, "请选择 Apple 健康 XML/ZIP，或小米运动 CSV/JSON/ZIP")
     temp_path = await save_upload_to_temp(file, suffix)
     try:
-        return HEALTH.import_file(temp_path, file.filename or "health-data")
+        result = HEALTH.import_file(temp_path, file.filename or "health-data")
+        EVENTS.publish("health", "imported", {"title": file.filename or "健康数据", **result}, "local")
+        return result
     except (ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         raise HTTPException(400, f"健康数据无法识别：{exc}")
     finally:
@@ -974,7 +1058,14 @@ async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix
     temp_path = await save_upload_to_temp(file, suffix)
     try:
-        return FILES.ingest(temp_path, file.filename or "upload")
+        result = FILES.ingest(temp_path, file.filename or "upload")
+        if not result.get("duplicate"):
+            EVENTS.publish("file", "analyzed", {
+                "title": result.get("original_name", file.filename or "文件"),
+                "hash": result.get("hash", ""),
+                "summary": str(result.get("extracted_text", ""))[:1000],
+            }, "local")
+        return result
     finally:
         temp_path.unlink(missing_ok=True)
 

@@ -112,6 +112,7 @@ fun SecondBrainApp(intent: Intent?) {
     var chats by remember { mutableStateOf<List<ChatExchange>>(emptyList()) }
     var goals by remember { mutableStateOf<List<RemoteGoal>>(emptyList()) }
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
+    var activity by remember { mutableStateOf<List<TaskActivity>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
     var usage by remember { mutableStateOf<TokenActivity?>(null) }
     var mapConfig by remember { mutableStateOf<MapConfig?>(null) }
@@ -148,6 +149,7 @@ fun SecondBrainApp(intent: Intent?) {
                 }
             }
             runCatching { events = ApiClient.events(server, token) }
+            runCatching { activity = ApiClient.activity(server, token) }
             runCatching { goals = ApiClient.goals(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
@@ -358,8 +360,12 @@ fun SecondBrainApp(intent: Intent?) {
                         runCatching { ApiClient.setTaskStatus(server, token, task.id, status) }
                             .onSuccess { goals = ApiClient.goals(server, token) }
                             .onFailure { notice = "更新任务失败：${it.message}" }
+                    } }, onTaskEnabled = { task -> scope.launch {
+                        runCatching { ApiClient.setTaskEnabled(server, token, task.id, !task.enabled) }
+                            .onSuccess { notice = if (task.enabled) "后台任务已暂停" else "后台任务已恢复"; goals = ApiClient.goals(server, token) }
+                            .onFailure { notice = "更新后台任务失败：${it.message}" }
                     } })
-                    2 -> EventsScreen(events, onRefresh = { scope.launch { refresh() } })
+                    2 -> EventsScreen(events, activity, onRefresh = { scope.launch { refresh() } })
                     3 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
                     else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
                         server = server.trim().trimEnd('/')
@@ -684,7 +690,7 @@ private fun amapHtml(spec: MapSpec, config: MapConfig): String {
 }
 
 @Composable
-private fun GoalsScreen(goals: List<RemoteGoal>, onCreate: (String) -> Unit, onGoalStatus: (RemoteGoal, String) -> Unit, onTaskStatus: (RemoteTask, String) -> Unit) {
+private fun GoalsScreen(goals: List<RemoteGoal>, onCreate: (String) -> Unit, onGoalStatus: (RemoteGoal, String) -> Unit, onTaskStatus: (RemoteTask, String) -> Unit, onTaskEnabled: (RemoteTask) -> Unit) {
     var newTitle by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
         item {
@@ -712,8 +718,9 @@ private fun GoalsScreen(goals: List<RemoteGoal>, onCreate: (String) -> Unit, onG
                             TextButton(onClick = { if (task.status != "completed" && task.status != "cancelled") onTaskStatus(task, if (task.status == "pending") "in_progress" else "completed") }, enabled = task.status != "completed" && task.status != "cancelled", contentPadding = PaddingValues(horizontal = 4.dp)) { Text(if (task.status == "completed") "✓" else "○", color = if (task.status == "completed") Forest else Color.Gray) }
                             Column(Modifier.weight(1f)) {
                                 Text(task.title, style = MaterialTheme.typography.bodyMedium, color = if (task.status == "completed") Color.Gray else Ink)
-                                Text(taskStatusLabel(task.status), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                Text(taskStatusLabel(task.status) + (task.nextRunAt?.let { " · 下次 $it" } ?: ""), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                             }
+                            if (task.schedule != "manual") TextButton(onClick = { onTaskEnabled(task) }) { Text(if (task.enabled) "暂停" else "恢复") }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -737,11 +744,20 @@ private fun taskStatusLabel(status: String) = when (status) {
 }
 
 @Composable
-private fun EventsScreen(events: List<CollectedEvent>, onRefresh: () -> Unit) {
+private fun EventsScreen(events: List<CollectedEvent>, activity: List<TaskActivity>, onRefresh: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        SectionHeader("已采集内容", "短信、通知与只读日程按时间同步到电脑", "刷新", onRefresh)
+        SectionHeader("活动与采集", "后台运行、短信、通知与只读日程都可追溯", "刷新", onRefresh)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            if (events.isEmpty()) item { Text("暂无记录。授权后可同步短信、通知和近期日程。", color = Color.Gray) }
+            if (activity.isNotEmpty()) item { Text("后台活动", style = MaterialTheme.typography.titleMedium, color = Forest) }
+            items(activity, key = { "run-${it.id}" }) { run ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("${run.goalTitle} · ${run.taskTitle}", style = MaterialTheme.typography.titleSmall)
+                    Text("${run.status} · ${run.trigger}" + (run.error.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+                    Text(run.startedAt + (run.nextRunAt?.let { " · 下次 $it" } ?: ""), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                } }
+            }
+            if (events.isNotEmpty()) item { Text("采集记录", style = MaterialTheme.typography.titleMedium, color = Forest, modifier = Modifier.padding(top = 8.dp)) }
+            if (events.isEmpty() && activity.isEmpty()) item { Text("暂无记录。授权后可同步短信、通知和近期日程。", color = Color.Gray) }
             items(events, key = { it.id }) { event ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("${when (event.source) { "sms" -> "短信"; "calendar" -> "日程"; else -> "通知" }} · ${event.title}", style = MaterialTheme.typography.titleSmall)
