@@ -113,6 +113,8 @@ fun SecondBrainApp(intent: Intent?) {
     var goals by remember { mutableStateOf<List<RemoteGoal>>(emptyList()) }
     var events by remember { mutableStateOf<List<CollectedEvent>>(emptyList()) }
     var activity by remember { mutableStateOf<List<TaskActivity>>(emptyList()) }
+    var approvals by remember { mutableStateOf<List<RemoteApproval>>(emptyList()) }
+    var connectorPermissions by remember { mutableStateOf<List<ConnectorPermission>>(emptyList()) }
     var files by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
     var usage by remember { mutableStateOf<TokenActivity?>(null) }
     var mapConfig by remember { mutableStateOf<MapConfig?>(null) }
@@ -150,6 +152,8 @@ fun SecondBrainApp(intent: Intent?) {
             }
             runCatching { events = ApiClient.events(server, token) }
             runCatching { activity = ApiClient.activity(server, token) }
+            runCatching { approvals = ApiClient.approvals(server, token) }
+            runCatching { connectorPermissions = ApiClient.connectorPermissions(server, token) }
             runCatching { goals = ApiClient.goals(server, token) }
             runCatching { files = ApiClient.files(server, token) }
             runCatching { usage = ApiClient.usage(server, token) }
@@ -327,7 +331,8 @@ fun SecondBrainApp(intent: Intent?) {
                     NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Text("◎") }, label = { Text("目标") })
                     NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Text("▤") }, label = { Text("采集") })
                     NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Text("▣") }, label = { Text("文件") })
-                    NavigationBarItem(selected = selectedTab == 4, onClick = { selectedTab = 4 }, icon = { Text("⚙") }, label = { Text("设置") })
+                    NavigationBarItem(selected = selectedTab == 4, onClick = { selectedTab = 4 }, icon = { Text("◇") }, label = { Text("审批") })
+                    NavigationBarItem(selected = selectedTab == 5, onClick = { selectedTab = 5 }, icon = { Text("⚙") }, label = { Text("设置") })
                 }
             }
         ) { padding ->
@@ -367,6 +372,22 @@ fun SecondBrainApp(intent: Intent?) {
                     } })
                     2 -> EventsScreen(events, activity, onRefresh = { scope.launch { refresh() } })
                     3 -> FilesScreen(files, uploading, onPickFiles = { filePicker.launch(arrayOf("*/*")) }, onDelete = { deleteTarget = it })
+                    4 -> SafetyScreen(approvals, connectorPermissions,
+                        onDecision = { item, decision, payload -> scope.launch {
+                            runCatching { ApiClient.decideApproval(server, token, item.id, decision, payload) }
+                                .onSuccess { notice = when(decision){"approve"->"已允许此动作";"deny"->"已拒绝此动作";else->"审批已撤销"}; approvals = ApiClient.approvals(server, token) }
+                                .onFailure { notice = "审批失败：${it.message}" }
+                        } },
+                        onExecuteForget = { item -> scope.launch {
+                            runCatching { ApiClient.executeForget(server, token, item.id) }
+                                .onSuccess { notice = "遗忘操作已执行"; refresh() }
+                                .onFailure { notice = "执行失败：${it.message}" }
+                        } },
+                        onConnector = { item -> scope.launch {
+                            runCatching { ApiClient.setConnectorPermission(server, token, item.connector, !item.enabled) }
+                                .onSuccess { notice = if(item.enabled) "权限已撤销，后续同步已停止" else "权限已重新启用"; refresh() }
+                                .onFailure { notice = "权限更新失败：${it.message}" }
+                        } }, onRefresh = { scope.launch { refresh() } })
                     else -> SettingsScreen(server, { server = it }, pairingCode, { pairingCode = it }, token.isNotBlank(), connected, usage, notificationStatus, currentSmsStatus, onSave = {
                         server = server.trim().trimEnd('/')
                         preferences.edit().putString("server", server).apply()
@@ -794,6 +815,89 @@ private fun SectionHeader(title: String, subtitle: String, action: String, onAct
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column { Text(title, style = MaterialTheme.typography.headlineSmall); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
         TextButton(onClick = onAction) { Text(action) }
+    }
+}
+
+@Composable
+private fun SafetyScreen(
+    approvals: List<RemoteApproval>, permissions: List<ConnectorPermission>,
+    onDecision: (RemoteApproval, String, String?) -> Unit,
+    onExecuteForget: (RemoteApproval) -> Unit,
+    onConnector: (ConnectorPermission) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    val statusLabels = mapOf("pending" to "等待确认", "approved" to "已允许，等待执行", "denied" to "已拒绝", "expired" to "已过期", "revoked" to "已撤销", "executing" to "正在执行", "executed" to "已执行", "failed" to "执行失败")
+    val levelLabels = mapOf("read" to "读取", "draft" to "草稿", "write" to "外部写入", "irreversible" to "不可逆")
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(vertical = 14.dp),
+    ) {
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("审批与安全中心", style = MaterialTheme.typography.headlineSmall, color = Ink)
+                    Text("写入和不可逆动作必须由你明确批准", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                TextButton(onClick = onRefresh) { Text("刷新") }
+            }
+        }
+        item { Text("待审批动作", style = MaterialTheme.typography.titleMedium, color = Forest) }
+        if (approvals.isEmpty()) item {
+            Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFFFFFDF8)) {
+                Text("没有待处理动作。需要写入外部系统或删除数据时，审批卡会出现在这里。", Modifier.padding(18.dp), color = Color.Gray)
+            }
+        }
+        items(approvals, key = { "approval-${it.id}" }) { item ->
+            var payload by remember(item.id, item.payload) { mutableStateOf(item.payload) }
+            Surface(
+                shape = RoundedCornerShape(14.dp), color = Color(0xFFFFFDF8),
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (item.status == "pending") Color(0xFFD6B887) else Color(0xFFD2D8D1)),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Surface(color = if (item.level in setOf("write", "irreversible")) Color(0xFFF7E4DC) else Color(0xFFE8EEE8), shape = RoundedCornerShape(99.dp)) {
+                            Text(levelLabels[item.level] ?: item.level, Modifier.padding(horizontal = 9.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = if (item.level in setOf("write", "irreversible")) Color(0xFF8F4337) else Forest)
+                        }
+                        Text(statusLabels[item.status] ?: item.status, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
+                    Text(item.summary, style = MaterialTheme.typography.titleMedium, color = Ink)
+                    Text(item.target.ifBlank { "未指定影响对象" }, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text("连接器：${item.connector.ifBlank { "本机数据" }} · 有效期：${item.expiresAt}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    OutlinedTextField(
+                        value = payload, onValueChange = { if (item.status == "pending") payload = it },
+                        readOnly = item.status != "pending", label = { Text("将写入或处理的精确内容") },
+                        modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8,
+                    )
+                    if (item.status == "pending") Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(onClick = { onDecision(item, "approve", payload) }) { Text("允许") }
+                        OutlinedButton(onClick = { onDecision(item, "deny", null) }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFA04339))) { Text("拒绝") }
+                        TextButton(onClick = { onDecision(item, "revoke", null) }) { Text("撤销") }
+                    } else if (item.status == "approved" && item.actionType == "data.forget") {
+                        Button(onClick = { onExecuteForget(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA04339))) { Text("执行已批准的遗忘") }
+                    } else if (item.status == "approved") {
+                        TextButton(onClick = { onDecision(item, "revoke", null) }) { Text("撤销批准") }
+                    }
+                }
+            }
+        }
+        item {
+            Spacer(Modifier.height(6.dp))
+            Text("连接器权限", style = MaterialTheme.typography.titleMedium, color = Forest)
+            Text("撤销后立即停止后续读取和事件任务，但不会删除已经采集的数据。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        }
+        items(permissions, key = { "connector-${it.connector}" }) { item ->
+            Surface(shape = RoundedCornerShape(13.dp), color = Color(0xFFFFFDF8), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD2D8D1))) {
+                Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(item.displayName, style = MaterialTheme.typography.titleSmall, color = Ink)
+                        Text(item.scopes.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        Text("${if(item.enabled) "已启用" else "已撤销"} · ${item.mode} · 最近使用：${item.lastUsedAt.ifBlank { "从未" }}", style = MaterialTheme.typography.labelSmall, color = if(item.enabled) Forest else Color(0xFFA04339))
+                    }
+                    OutlinedButton(onClick = { onConnector(item) }) { Text(if(item.enabled) "撤销" else "启用") }
+                }
+            }
+        }
     }
 }
 

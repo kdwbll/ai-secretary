@@ -13,6 +13,8 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 data class MapSpec(
@@ -44,6 +46,14 @@ data class RemoteNotification(val id: Long, val kind: String, val title: String,
 data class RemoteTask(val id: Long, val title: String, val status: String, val dueAt: String?, val schedule: String, val nextRunAt: String?, val enabled: Boolean)
 data class RemoteGoal(val id: Long, val title: String, val description: String, val status: String, val dueAt: String?, val completedTasks: Int, val taskCount: Int, val tasks: List<RemoteTask>)
 data class TaskActivity(val id: Long, val taskId: Long, val taskTitle: String, val goalTitle: String, val status: String, val trigger: String, val startedAt: String, val nextRunAt: String?, val error: String)
+data class RemoteApproval(
+    val id: Long, val actionType: String, val level: String, val connector: String,
+    val summary: String, val target: String, val payload: String, val status: String, val expiresAt: String,
+)
+data class ConnectorPermission(
+    val connector: String, val displayName: String, val scopes: List<String>,
+    val mode: String, val enabled: Boolean, val lastUsedAt: String,
+)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -254,6 +264,60 @@ object ApiClient {
                 val item = array.getJSONObject(index)
                 add(TaskActivity(item.getLong("id"), item.getLong("task_id"), item.optString("task_title"), item.optString("goal_title"), item.optString("status"), item.optString("trigger"), item.optString("started_at"), item.optString("next_run_at").takeIf { it.isNotBlank() }, item.optString("error")))
             } }
+        }
+    }
+
+    suspend fun approvals(server: String, token: String): List<RemoteApproval> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/approvals?limit=100", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取审批失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("approvals")
+            buildList { for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(RemoteApproval(
+                    item.getLong("id"), item.optString("action_type"), item.optString("level"), item.optString("connector"),
+                    item.optString("summary"), item.optString("target"), item.optJSONObject("exact_payload")?.toString(2) ?: "{}",
+                    item.optString("status"), item.optString("expires_at"),
+                ))
+            } }
+        }
+    }
+
+    suspend fun decideApproval(server: String, token: String, approvalId: Long, decision: String, editedPayload: String? = null) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("decision", decision)
+        if (editedPayload != null) body.put("edited_payload", JSONObject(editedPayload))
+        client.newCall(request(server, "/api/approvals/$approvalId/decision", token)
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            val content = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error(runCatching { JSONObject(content).optString("detail") }.getOrNull().orEmpty().ifBlank { "处理审批失败（${response.code}）" })
+        }
+    }
+
+    suspend fun executeForget(server: String, token: String, approvalId: Long) = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/forget/$approvalId/execute", token)
+            .post("{}".toRequestBody("application/json".toMediaTypeOrNull())).build()).execute().use { response ->
+            if (!response.isSuccessful) error("执行遗忘失败（${response.code}）")
+        }
+    }
+
+    suspend fun connectorPermissions(server: String, token: String): List<ConnectorPermission> = withContext(Dispatchers.IO) {
+        client.newCall(request(server, "/api/connectors/permissions", token).get().build()).execute().use { response ->
+            if (!response.isSuccessful) error("读取连接器权限失败（${response.code}）")
+            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("connectors")
+            buildList { for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                val scopes = item.optJSONArray("scopes")?.let { values -> buildList {
+                    for (scopeIndex in 0 until values.length()) add(values.optString(scopeIndex))
+                } }.orEmpty()
+                add(ConnectorPermission(item.optString("connector"), item.optString("display_name"), scopes,
+                    item.optString("mode", "read"), item.optBoolean("enabled"), item.optString("last_used_at")))
+            } }
+        }
+    }
+
+    suspend fun setConnectorPermission(server: String, token: String, connector: String, enabled: Boolean) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("enabled", enabled).toString().toRequestBody("application/json".toMediaTypeOrNull())
+        client.newCall(request(server, "/api/connectors/permissions/${URLEncoder.encode(connector, StandardCharsets.UTF_8.name())}", token).put(body).build()).execute().use { response ->
+            if (!response.isSuccessful) error("更新连接器权限失败（${response.code}）")
         }
     }
 
