@@ -185,6 +185,7 @@ fun SecondBrainApp(intent: Intent?) {
                 preferences.edit().putLong("health_last_checked_at", now).apply()
                 runCatching {
                     if (!HealthConnectReader.hasPermissions(context)) return@runCatching
+                    HealthSyncWorker.schedule(context)
                     val samples = HealthConnectReader.recent(context)
                     ApiClient.syncHealth(server, token, samples)
                     preferences.edit().putLong("health_last_uploaded_at", System.currentTimeMillis()).apply()
@@ -247,7 +248,10 @@ fun SecondBrainApp(intent: Intent?) {
     val healthPermission = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { granted ->
-        if (granted.containsAll(HealthConnectReader.permissions)) syncHealthData()
+        if (granted.containsAll(HealthConnectReader.permissions(context))) {
+            HealthSyncWorker.schedule(context)
+            syncHealthData()
+        }
         else notice = "未授予全部健康读取权限，没有上传健康数据"
     }
 
@@ -492,7 +496,7 @@ fun SecondBrainApp(intent: Intent?) {
                             }
                             else -> scope.launch {
                                 if (HealthConnectReader.hasPermissions(context)) syncHealthData()
-                                else healthPermission.launch(HealthConnectReader.permissions)
+                                else healthPermission.launch(HealthConnectReader.permissions(context))
                             }
                         }
                     })
@@ -1035,7 +1039,7 @@ private fun SettingsScreen(server: String, onServer: (String) -> Unit, pairingCo
         Text("仅在点击时申请日历读取权限，并只读取昨天至未来 14 天的日程；不会创建、修改或删除手机日历。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onHealth, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("授权并同步健康数据") }
         Text(healthStatus, style = MaterialTheme.typography.bodySmall, color = if (healthStatus.contains("不可用") || healthStatus.contains("需要")) Color(0xFF9A433A) else Forest)
-        Text("只申请步数、心率、睡眠、体重、活动能量和距离的读取权限，不申请写入。授权后打开应用会每 5 分钟检查一次，也可随时手动同步。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        Text("只申请步数、心率、睡眠、体重、活动能量和距离的读取权限，不申请写入。授权后打开应用会每 5 分钟检查；系统支持后台读取时还会约每 15 分钟同步，也可随时手动同步。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         OutlinedButton(onClick = onNotifications, modifier = Modifier.fillMaxWidth()) { Text("开启通知读取权限") }
         OutlinedButton(onClick = onScanNotifications, enabled = connected == true, modifier = Modifier.fillMaxWidth()) { Text("重新扫描当前通知栏") }
         Text(notificationStatus, style = MaterialTheme.typography.bodySmall, color = if (notificationStatus.startsWith("系统尚未")) Color(0xFF9A433A) else Forest)

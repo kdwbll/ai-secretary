@@ -2,7 +2,9 @@ package com.secondbrain.app
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.feature.ExperimentalFeatureAvailabilityApi
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateRecord
@@ -24,7 +26,7 @@ data class HealthSample(
 )
 
 object HealthConnectReader {
-    val permissions = setOf(
+    private val foregroundPermissions = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
         HealthPermission.getReadPermission(HeartRateRecord::class),
         HealthPermission.getReadPermission(SleepSessionRecord::class),
@@ -35,15 +37,24 @@ object HealthConnectReader {
 
     fun sdkStatus(context: Context): Int = HealthConnectClient.getSdkStatus(context)
 
+    @OptIn(ExperimentalFeatureAvailabilityApi::class)
+    fun permissions(context: Context): Set<String> {
+        if (sdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return foregroundPermissions
+        val client = HealthConnectClient.getOrCreate(context)
+        return if (client.features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE) {
+            foregroundPermissions + HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+        } else foregroundPermissions
+    }
+
     suspend fun hasPermissions(context: Context): Boolean {
         if (sdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return false
-        return HealthConnectClient.getOrCreate(context).permissionController.getGrantedPermissions().containsAll(permissions)
+        return HealthConnectClient.getOrCreate(context).permissionController.getGrantedPermissions().containsAll(permissions(context))
     }
 
     suspend fun recent(context: Context, days: Long = 14): List<HealthSample> {
         check(sdkStatus(context) == HealthConnectClient.SDK_AVAILABLE) { "此手机暂不可用 Health Connect" }
         val client = HealthConnectClient.getOrCreate(context)
-        check(client.permissionController.getGrantedPermissions().containsAll(permissions)) { "健康数据读取权限尚未全部授权" }
+        check(client.permissionController.getGrantedPermissions().containsAll(permissions(context))) { "健康数据读取权限尚未全部授权" }
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val samples = mutableListOf<HealthSample>()
