@@ -45,6 +45,20 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(result["source"], "Apple 健康")
             self.assertEqual(result["imported"], 1)
 
+    def test_sync_android_health_samples_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            samples = [{
+                "external_id": "steps-2026-10-15", "recorded_at": "2026-10-15T21:00:00+08:00",
+                "metric": "steps", "value": 7654, "unit": "步",
+            }]
+            first = service.sync_samples(samples)
+            second = service.sync_samples(samples)
+            self.assertEqual(first["imported"], 1)
+            self.assertEqual(second["imported"], 0)
+            self.assertEqual(first["latest"], "2026-10-15T21:00:00+08:00")
+            self.assertIn("Android Health Connect", service.memory.storage.read_text("health.md"))
+
 
 if __name__ == "__main__":
     unittest.main()
