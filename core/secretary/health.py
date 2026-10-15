@@ -127,7 +127,7 @@ class HealthService:
             if external_id:
                 sample["external_id"] = hashlib.sha256(f"{source}:{external_id}".encode()).hexdigest()
             normalized.append(sample)
-        inserted = self._store(normalized)
+        inserted = self._sync_store(normalized)
         if inserted:
             labels = "、".join(METRICS[key]["label"] for key in sorted({item["metric"] for item in normalized}))
             self.memory.upsert_fact(
@@ -136,6 +136,20 @@ class HealthService:
             )
         latest = max((item["recorded_at"] for item in normalized), default="")
         return {"ok": True, "source": source, "received": len(samples), "detected": len(normalized), "imported": inserted, "latest": latest}
+
+    def _sync_store(self, samples: list[dict[str, Any]]) -> int:
+        changed = 0
+        with self.database.connect() as db:
+            for sample in samples:
+                cursor = db.execute(
+                    "INSERT INTO health_samples(recorded_at,metric,value,unit,source,external_id) VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(external_id) DO UPDATE SET recorded_at=excluded.recorded_at,value=excluded.value,unit=excluded.unit,source=excluded.source "
+                    "WHERE health_samples.recorded_at<>excluded.recorded_at OR health_samples.value<>excluded.value "
+                    "OR health_samples.unit<>excluded.unit OR health_samples.source<>excluded.source",
+                    (sample["recorded_at"], sample["metric"], sample["value"], sample["unit"], sample["source"], sample["external_id"]),
+                )
+                changed += cursor.rowcount
+        return changed
 
     def _parse_bytes(self, raw: bytes, name: str, source: str) -> list[dict[str, Any]]:
         suffix = Path(name).suffix.lower()
