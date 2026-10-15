@@ -41,9 +41,8 @@ data class RemoteFile(val hash: String, val name: String, val createdAt: String,
 data class TokenDay(val date: String, val tokens: Long, val cost: Double)
 data class TokenActivity(val totalTokens: Long, val totalCost: Double, val days: List<TokenDay>)
 data class RemoteNotification(val id: Long, val kind: String, val title: String, val body: String)
-data class RemoteTask(val id: Long, val title: String, val status: String, val dueAt: String?, val schedule: String, val nextRunAt: String?, val enabled: Boolean)
+data class RemoteTask(val id: Long, val title: String, val status: String, val dueAt: String?)
 data class RemoteGoal(val id: Long, val title: String, val description: String, val status: String, val dueAt: String?, val completedTasks: Int, val taskCount: Int, val tasks: List<RemoteTask>)
-data class TaskActivity(val id: Long, val taskId: Long, val taskTitle: String, val goalTitle: String, val status: String, val trigger: String, val startedAt: String, val nextRunAt: String?, val error: String)
 
 object ApiClient {
     private val client = OkHttpClient.Builder()
@@ -207,7 +206,7 @@ object ApiClient {
                     val tasks = item.optJSONArray("tasks")?.let { values -> buildList {
                         for (taskIndex in 0 until values.length()) {
                             val task = values.getJSONObject(taskIndex)
-                            add(RemoteTask(task.getLong("id"), task.optString("title"), task.optString("status", "pending"), task.optString("due_at").takeIf { it.isNotBlank() }, task.optString("schedule", "manual"), task.optString("next_run_at").takeIf { it.isNotBlank() }, task.optBoolean("enabled", true)))
+                            add(RemoteTask(task.getLong("id"), task.optString("title"), task.optString("status", "pending"), task.optString("due_at").takeIf { it.isNotBlank() }))
                         }
                     } }.orEmpty()
                     add(RemoteGoal(item.getLong("id"), item.optString("title"), item.optString("description"), item.optString("status", "active"), item.optString("due_at").takeIf { it.isNotBlank() }, item.optInt("completed_task_count"), item.optInt("task_count"), tasks))
@@ -236,24 +235,6 @@ object ApiClient {
         val body = JSONObject().put("status", status).toString().toRequestBody("application/json".toMediaTypeOrNull())
         client.newCall(request(server, "/api/tasks/$taskId/status", token).post(body).build()).execute().use { response ->
             if (!response.isSuccessful) error("更新任务失败（${response.code}）")
-        }
-    }
-
-    suspend fun setTaskEnabled(server: String, token: String, taskId: Long, enabled: Boolean) = withContext(Dispatchers.IO) {
-        val body = JSONObject().put("enabled", enabled).toString().toRequestBody("application/json".toMediaTypeOrNull())
-        client.newCall(request(server, "/api/tasks/$taskId", token).put(body).build()).execute().use { response ->
-            if (!response.isSuccessful) error("更新后台任务失败（${response.code}）")
-        }
-    }
-
-    suspend fun activity(server: String, token: String): List<TaskActivity> = withContext(Dispatchers.IO) {
-        client.newCall(request(server, "/api/activity?limit=100", token).get().build()).execute().use { response ->
-            if (!response.isSuccessful) error("读取活动记录失败（${response.code}）")
-            val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("activity")
-            buildList { for (index in 0 until array.length()) {
-                val item = array.getJSONObject(index)
-                add(TaskActivity(item.getLong("id"), item.getLong("task_id"), item.optString("task_title"), item.optString("goal_title"), item.optString("status"), item.optString("trigger"), item.optString("started_at"), item.optString("next_run_at").takeIf { it.isNotBlank() }, item.optString("error")))
-            } }
         }
     }
 

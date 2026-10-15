@@ -3,7 +3,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.secondbrain.app"
     compileSdk = 35
-    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 23; versionName = "0.13.1" }
+    defaultConfig { applicationId = "com.secondbrain.app"; minSdk = 28; targetSdk = 35; versionCode = 22; versionName = "0.13.0" }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
     compileOptions {
